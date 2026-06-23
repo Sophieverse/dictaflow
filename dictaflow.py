@@ -29,7 +29,8 @@ def _require(pkg, install):
 
 sd  = _require("sounddevice", "sounddevice")
 np  = _require("numpy",       "numpy")
-kb  = _require("pynput.keyboard", "pynput")
+_pynput_kb = _require("pynput.keyboard", "pynput")
+kb = _pynput_kb  # pynput.keyboard module — Key, Listener live here
 Groq = _require("groq", "groq").Groq
 
 # ──────────────────────────────────────────────────────────────
@@ -43,7 +44,7 @@ CHANNELS        = 1
 
 # The hold-to-talk key. right-⌥ (Option) is the default.
 # Change to kb.Key.alt (left Option), kb.Key.ctrl_r, etc. if preferred.
-TRIGGER_KEY = kb.keyboard.Key.alt_r
+TRIGGER_KEY = kb.Key.alt_r
 
 DEFAULT_CONFIG: dict = {
     "groq_api_key":     "",
@@ -253,7 +254,7 @@ class DictaFlow:
         print("  Hold right-⌥ (Option) to dictate; release to transcribe.")
         print(f"  Transcripts → {TRANSCRIPTS_DIR}/")
         print("  Ctrl+C to quit.\n")
-        listener = kb.keyboard.Listener(
+        listener = kb.Listener(
             on_press=self._on_press, on_release=self._on_release
         )
         listener.start()
