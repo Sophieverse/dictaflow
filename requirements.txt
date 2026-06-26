@@ -1,4 +1,7 @@
 sounddevice
 numpy
-groq
 pynput
+# local backend (default): on-device Whisper via Apple MLX
+mlx-whisper
+# groq backend (optional cloud path): pip install groq
+groq

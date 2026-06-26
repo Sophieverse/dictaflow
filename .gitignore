@@ -6,3 +6,7 @@ venv/
 .DS_Store
 # config contains the API key — never commit it
 ~/.dictaflow/
+# downloaded model weights — far too large for git (1.6GB+)
+models/
+# runtime logs from the LaunchAgent
+*.log
