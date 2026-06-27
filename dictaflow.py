@@ -40,12 +40,22 @@ kb = _pynput_kb  # pynput.keyboard module — Key, Listener live here
 CONFIG_DIR      = Path.home() / ".dictaflow"
 CONFIG_FILE     = CONFIG_DIR / "config.json"
 TRANSCRIPTS_DIR = Path.home() / "transcriptions"
+TRANSCRIPT_FILE = TRANSCRIPTS_DIR / "transcripts.md"  # single rolling log
 SAMPLE_RATE     = 16000
 CHANNELS        = 1
 
-# The hold-to-talk key. right-⌥ (Option) is the default.
-# Change to kb.Key.alt (left Option), kb.Key.ctrl_r, etc. if preferred.
-TRIGGER_KEY = kb.Key.alt_r
+# Local model folders.
+TURBO_MODEL = "/Users/melod/dictaflow/models/whisper-large-v3-turbo"
+SMALL_MODEL = "/Users/melod/dictaflow/models/whisper-small-mlx"
+
+# Hold-to-talk keys → which model transcribes. Hold a key, speak, release.
+#   right-⌥ (Option)  → Turbo, most accurate (~1.8s)
+#   right-⌘ (Command) → Small, fastest       (~0.5s)
+# (MacBook keyboards have no right-Control, so right-Command is the 2nd key.)
+KEY_MODELS = {
+    kb.Key.alt_r: ("Turbo", TURBO_MODEL),
+    kb.Key.cmd_r: ("Small", SMALL_MODEL),
+}
 
 DEFAULT_CONFIG: dict = {
     # "local" = open-weight models on your Mac (mlx-whisper + Ollama).
@@ -263,17 +273,16 @@ def paste_text(text: str) -> None:
 
 
 def save_transcript(raw: str, cleaned: str) -> Path:
+    """Append one dated section to the single rolling transcripts.md."""
     TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
-    ts   = datetime.datetime.now()
-    name = ts.strftime("%Y-%m-%d_%H%M%S") + ".md"
-    path = TRANSCRIPTS_DIR / name
-    lines = [f"# {ts.strftime('%Y-%m-%d %H:%M:%S')}\n"]
-    if cleaned != raw:
-        lines += [cleaned, "\n", "---\n", f"*Raw:* {raw}\n"]
-    else:
-        lines += [cleaned, "\n"]
-    path.write_text("\n".join(lines))
-    return path
+    ts = datetime.datetime.now()
+    with open(TRANSCRIPT_FILE, "a") as f:
+        if f.tell() == 0:                       # brand-new file → add a title
+            f.write("# Transcripts\n")
+        f.write(f"\n## {ts.strftime('%Y-%m-%d %H:%M:%S')}\n\n{cleaned}\n")
+        if cleaned != raw:                      # only when LLM cleanup altered it
+            f.write(f"\n*Raw:* {raw}\n")
+    return TRANSCRIPT_FILE
 
 
 # ──────────────────────────────────────────────────────────────
@@ -281,48 +290,66 @@ def save_transcript(raw: str, cleaned: str) -> Path:
 # ──────────────────────────────────────────────────────────────
 class DictaFlow:
     def __init__(self, cfg: dict):
-        self.cfg      = cfg
-        self.recorder = AudioRecorder()
-        self._held    = False
-        self._busy    = False
+        self.cfg        = cfg
+        self.recorder   = AudioRecorder()
+        self._held_key  = None    # which trigger key is currently down (or None)
+        self._active    = None    # (name, model_path) for the in-flight recording
+        self._busy      = False
 
-    # pynput calls these from its own thread, so we keep them lightweight
-    # "\033[K" clears from the cursor to end-of-line so a shorter status line
-    # never leaves leftover characters from a longer previous one.
+    # pynput calls these from its own thread, so we keep them lightweight.
+    # Each trigger key maps to its own model — hold the key for the model you want.
     def _on_press(self, key) -> None:
-        if key == TRIGGER_KEY and not self._held and not self._busy:
-            self._held = True
-            print("\r🎙  Recording…\033[K", end="", flush=True)
-            self.recorder.start()
+        # NOTE: exceptions raised here propagate out of pynput and kill the
+        # listener (crashing the whole app), so we catch everything.
+        try:
+            if key in KEY_MODELS and self._held_key is None and not self._busy:
+                self._held_key = key
+                self._active   = KEY_MODELS[key]   # (name, path)
+                print(f"\r🎙  Recording… [{self._active[0]}]\033[K", end="", flush=True)
+                self.recorder.start()
+        except Exception as exc:
+            self._held_key = None
+            self._active   = None
+            # -9986 etc. = mic busy/unavailable (often another app holds it)
+            print(f"\r✗  mic unavailable ({exc}); is another app using it?\033[K",
+                  flush=True)
 
     def _on_release(self, key) -> None:
-        if key == TRIGGER_KEY and self._held:
-            self._held = False
-            audio = self.recorder.stop()
-            if audio:
-                threading.Thread(target=self._process, args=(audio,), daemon=True).start()
-            else:
-                print("\r(no audio captured)\033[K", end="", flush=True)
+        try:
+            if key == self._held_key:
+                self._held_key = None
+                audio = self.recorder.stop()
+                if audio:
+                    threading.Thread(target=self._process,
+                                     args=(audio, self._active), daemon=True).start()
+                else:
+                    print("\r(no audio captured)\033[K", end="", flush=True)
+        except Exception as exc:
+            self._held_key = None
+            print(f"\r✗  {exc}\033[K", flush=True)
 
-    def _process(self, audio_bytes: bytes) -> None:
+    def _process(self, audio_bytes: bytes, model) -> None:
         self._busy = True
         wav_path   = None
+        name, path = model
+        # transcribe with the model bound to the key that was held
+        cfg = {**self.cfg, "local_whisper_model": path}
         try:
-            print("\r⚙  Transcribing…\033[K", end="", flush=True)
+            print(f"\r⚙  Transcribing… [{name}]\033[K", end="", flush=True)
             wav_path = AudioRecorder.to_wav(audio_bytes)
-            raw      = transcribe(wav_path, self.cfg)
+            raw      = transcribe(wav_path, cfg)
 
             if not raw:
                 print("\r✗  No speech detected (ignored)\033[K", flush=True)
                 return
 
-            cleaned = cleanup(raw, self.cfg)
+            cleaned = cleanup(raw, cfg)
 
             paste_text(cleaned)
-            path  = save_transcript(raw, cleaned)
+            tpath = save_transcript(raw, cleaned)
             short = cleaned[:70] + ("…" if len(cleaned) > 70 else "")
-            print(f"\r✓  {short}\033[K", flush=True)
-            print(f"   → {path}", flush=True)
+            print(f"\r✓  [{name}] {short}\033[K", flush=True)
+            print(f"   → {tpath}", flush=True)
 
         except Exception as exc:
             print(f"\r✗  {exc}\033[K", flush=True)
@@ -332,23 +359,27 @@ class DictaFlow:
             self._busy = False
 
     def _warmup(self) -> None:
-        """Load the model once at startup (on silence) so the FIRST real
-        dictation is ~2s instead of ~4s. Runs off-thread; result discarded."""
+        """Pre-load each model (on silence) so the first dictation with either
+        key is fast. Runs off-thread; results discarded."""
         if self.cfg.get("backend") != "local":
             return
-        try:
-            silence = np.zeros(SAMPLE_RATE // 2, dtype="int16").tobytes()
-            wp = AudioRecorder.to_wav(silence)
-            transcribe(wp, self.cfg)
-            os.unlink(wp)
-            print("\r✓  Model ready.\033[K")
-        except Exception:
-            pass  # warmup is best-effort; real dictation will still work
+        for name, path in {v[0]: v[1] for v in KEY_MODELS.values()}.items():
+            try:
+                silence = np.zeros(SAMPLE_RATE // 2, dtype="int16").tobytes()
+                wp = AudioRecorder.to_wav(silence)
+                transcribe(wp, {**self.cfg, "local_whisper_model": path})
+                os.unlink(wp)
+                print(f"\r✓  {name} model ready.\033[K")
+            except Exception:
+                pass  # warmup is best-effort; real dictation will still work
 
     def run(self) -> None:
         print("DictaFlow is running.")
-        print("  Hold right-⌥ (Option) to dictate; release to transcribe.")
-        print(f"  Transcripts → {TRANSCRIPTS_DIR}/")
+        for key, (name, _) in KEY_MODELS.items():
+            label = "right-⌥ (Option)" if key == kb.Key.alt_r else \
+                    "right-⌘ (Command)" if key == kb.Key.cmd_r else str(key)
+            print(f"  Hold {label} → {name}")
+        print(f"  Transcripts → {TRANSCRIPT_FILE}")
         print("  Ctrl+C to quit.\n")
         threading.Thread(target=self._warmup, daemon=True).start()
         listener = kb.Listener(
