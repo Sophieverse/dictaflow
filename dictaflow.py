@@ -119,6 +119,20 @@ def setup_wizard(cfg: dict) -> dict:
 # ──────────────────────────────────────────────────────────────
 # Audio
 # ──────────────────────────────────────────────────────────────
+def _builtin_mic_device() -> int | None:
+    """Pin recording to the Mac's built-in mic instead of whatever the OS
+    'default' input device is. Bluetooth headsets (AirPods, WH-1000XM4, …)
+    become the default input the moment they're connected, and CoreAudio
+    renegotiating their profile (output-only A2DP -> bidirectional HFP) the
+    instant something tries to record from them is a common source of AUHAL
+    'Invalid Property Value' / PortAudio -9986 errors. Falls back to the
+    system default if no built-in mic is found (e.g. on a different Mac)."""
+    for i, d in enumerate(sd.query_devices()):
+        if d["max_input_channels"] > 0 and "MacBook" in d["name"] and "Microphone" in d["name"]:
+            return i
+    return None
+
+
 class AudioRecorder:
     def __init__(self):
         self._chunks: list = []
@@ -128,12 +142,17 @@ class AudioRecorder:
     def start(self) -> None:
         self._chunks = []
         self._active = True
-        self._stream = sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype="int16",
-            callback=self._cb,
-        )
+        if self._stream is None:
+            # Opened once and reused across presses — negotiating a fresh
+            # CoreAudio device on every keypress (~100ms+) was eating the
+            # entire buffer on brief taps, so stop() saw zero frames.
+            self._stream = sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype="int16",
+                device=_builtin_mic_device(),
+                callback=self._cb,
+            )
         self._stream.start()
 
     def _cb(self, indata, frames, time_info, status) -> None:
@@ -144,8 +163,6 @@ class AudioRecorder:
         self._active = False
         if self._stream:
             self._stream.stop()
-            self._stream.close()
-            self._stream = None
         if not self._chunks:
             return None
         return np.concatenate(self._chunks, axis=0).tobytes()
@@ -190,6 +207,19 @@ def _is_repetition_hallucination(text: str) -> bool:
     from collections import Counter
     _, top = Counter(w.lower() for w in words).most_common(1)[0]
     return top / len(words) > 0.5
+
+
+SILENCE_PEAK_THRESHOLD = 300  # int16 peak; see check_audio.py (peak<50 = no mic signal)
+
+
+def _is_near_silent(audio_bytes: bytes) -> bool:
+    """A too-brief key-tap often captures only mic noise, not speech. Whisper
+    doesn't reliably return empty text for that — it sometimes hallucinates a
+    stock phrase from its training data instead (e.g. 'Thank you.',
+    'Thanks for watching.'). Catch it on peak amplitude *before* calling
+    Whisper so we never feed it near-silent audio in the first place."""
+    peak = int(np.abs(np.frombuffer(audio_bytes, dtype="int16")).max(initial=0))
+    return peak < SILENCE_PEAK_THRESHOLD
 
 
 def _transcribe_groq(wav_path: str, cfg: dict) -> str:
@@ -286,24 +316,128 @@ def save_transcript(raw: str, cleaned: str) -> Path:
 
 
 # ──────────────────────────────────────────────────────────────
+# Bubble indicator — small floating pill, bottom-center of the screen,
+# shown only while hands-free listening is active.
+# ──────────────────────────────────────────────────────────────
+class BubbleWindow:
+    def __init__(self):
+        self._ok = False
+        try:
+            from Cocoa import (
+                NSApplication, NSWindow, NSColor, NSMakeRect,
+                NSBackingStoreBuffered, NSWindowStyleMaskBorderless,
+                NSFloatingWindowLevel, NSScreen, NSTextField,
+                NSApplicationActivationPolicyAccessory, NSAnyEventMask,
+            )
+            import Quartz
+            self._Quartz = Quartz
+            self._mask   = NSAnyEventMask
+
+            self._app = NSApplication.sharedApplication()
+            self._app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+
+            w, h   = 220, 40
+            screen = NSScreen.mainScreen().frame()
+            x, y   = (screen.size.width - w) / 2, 50
+            self._win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+                NSMakeRect(x, y, w, h), NSWindowStyleMaskBorderless,
+                NSBackingStoreBuffered, False,
+            )
+            self._win.setLevel_(NSFloatingWindowLevel)
+            self._win.setOpaque_(False)
+            self._win.setBackgroundColor_(
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(0.85, 0.2, 0.2, 0.92)
+            )
+            self._win.setHasShadow_(True)
+            cv = self._win.contentView()
+            cv.setWantsLayer_(True)
+            try:
+                cv.layer().setCornerRadius_(h / 2)   # pill shape; cosmetic only
+            except Exception:
+                pass
+
+            self._label = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 11, w, 18))
+            self._label.setBezeled_(False)
+            self._label.setDrawsBackground_(False)
+            self._label.setEditable_(False)
+            self._label.setSelectable_(False)
+            self._label.setAlignment_(2)  # NSTextAlignmentCenter
+            self._label.setTextColor_(NSColor.whiteColor())
+            cv.addSubview_(self._label)
+            self._ok = True
+        except Exception as exc:
+            print(f"(bubble indicator unavailable, continuing without it: {exc})")
+
+    def show(self, text: str) -> None:
+        if not self._ok:
+            return
+        self._label.setStringValue_(text)
+        self._win.orderFrontRegardless()
+
+    def hide(self) -> None:
+        if self._ok:
+            self._win.orderOut_(None)
+
+    def pump(self, seconds: float = 0.05) -> None:
+        """Drain pending AppKit events for a short window. Call this from the
+        main-thread loop in place of a bare sleep — pynput's listener runs in
+        its own thread, so this is the only thing keeping the bubble alive."""
+        if not self._ok:
+            time.sleep(seconds)
+            return
+        until = self._Quartz.NSDate.dateWithTimeIntervalSinceNow_(seconds)
+        event = self._app.nextEventMatchingMask_untilDate_inMode_dequeue_(
+            self._mask, until, "kCFRunLoopDefaultMode", True,
+        )
+        if event is not None:
+            self._app.sendEvent_(event)
+
+
+def _key_label(key) -> str:
+    return "right-⌥ (Option)" if key == kb.Key.alt_r else \
+           "right-⌘ (Command)" if key == kb.Key.cmd_r else str(key)
+
+
+# A press+release shorter than this counts as a "tap" (a click, not a real
+# dictation hold); two taps within the window below count as a double-click.
+TAP_MAX_HOLD      = 0.25
+DOUBLE_TAP_WINDOW = 0.4
+
+
+# ──────────────────────────────────────────────────────────────
 # Main app
 # ──────────────────────────────────────────────────────────────
 class DictaFlow:
     def __init__(self, cfg: dict):
         self.cfg        = cfg
         self.recorder   = AudioRecorder()
+        self.bubble     = BubbleWindow()
         self._held_key  = None    # which trigger key is currently down (or None)
         self._active    = None    # (name, model_path) for the in-flight recording
         self._busy      = False
+        self._press_time      = {}   # key -> monotonic time of its current press
+        self._last_tap_release = {}  # key -> monotonic time of its last quick tap
+        self._handsfree_key    = None  # key currently in toggled hands-free mode
+        self._pending_tap_timer = {}  # key -> Timer waiting to see if a 2nd tap follows
 
     # pynput calls these from its own thread, so we keep them lightweight.
     # Each trigger key maps to its own model — hold the key for the model you want.
+    # Double-tapping a key (two quick taps within DOUBLE_TAP_WINDOW) instead
+    # toggles hands-free mode: recording keeps going without holding anything
+    # down, shows the bubble, and a single tap of the same key stops it.
     def _on_press(self, key) -> None:
         # NOTE: exceptions raised here propagate out of pynput and kill the
         # listener (crashing the whole app), so we catch everything.
         try:
-            if key in KEY_MODELS and self._held_key is None and not self._busy:
+            if key not in KEY_MODELS:
+                return
+            if self._handsfree_key is not None:
+                if key == self._handsfree_key:
+                    self._press_time[key] = time.monotonic()
+                return  # already listening hands-free; ignore other keys too
+            if self._held_key is None and not self._busy:
                 self._held_key = key
+                self._press_time[key] = time.monotonic()
                 self._active   = KEY_MODELS[key]   # (name, path)
                 print(f"\r🎙  Recording… [{self._active[0]}]\033[K", end="", flush=True)
                 self.recorder.start()
@@ -316,17 +450,82 @@ class DictaFlow:
 
     def _on_release(self, key) -> None:
         try:
-            if key == self._held_key:
-                self._held_key = None
+            if key not in KEY_MODELS:
+                return
+            now = time.monotonic()
+
+            if self._handsfree_key == key:
+                self._handsfree_key = None
+                self._press_time.pop(key, None)
+                self._last_tap_release.pop(key, None)
+                self.bubble.hide()
                 audio = self.recorder.stop()
                 if audio:
                     threading.Thread(target=self._process,
                                      args=(audio, self._active), daemon=True).start()
                 else:
                     print("\r(no audio captured)\033[K", end="", flush=True)
+                return
+
+            if key != self._held_key:
+                return
+            self._held_key   = None
+            hold_duration    = now - self._press_time.get(key, now)
+
+            if hold_duration < TAP_MAX_HOLD:
+                last_tap = self._last_tap_release.get(key)
+                if last_tap is not None and (now - last_tap) < DOUBLE_TAP_WINDOW:
+                    # Double-click: cancel tap #1's pending finalize (its audio
+                    # was just the click noise, not real speech — discard it).
+                    # The recorder is already running (started by this second
+                    # tap's press) — let it keep going into hands-free mode
+                    # instead of stopping/restarting it.
+                    timer = self._pending_tap_timer.pop(key, None)
+                    if timer:
+                        timer.cancel()
+                    self._last_tap_release.pop(key, None)
+                    self._handsfree_key = key
+                    self.bubble.show(f"🎙 Listening… ({self._active[0]})")
+                    print(f"\r🎙  Hands-free… [{self._active[0]}] "
+                          f"(tap {_key_label(key)} again to stop)\033[K",
+                          end="", flush=True)
+                    return
+
+                # Lone tap so far — don't transcribe yet. If it's actually
+                # about to be a double-click, doing so immediately would set
+                # self._busy while we're transcribing, silently swallowing
+                # the second tap's press before we ever see it. Wait out the
+                # double-click window first; _finalize_tap transcribes only
+                # if no second tap arrives to cancel it.
+                self._last_tap_release[key] = now
+                audio = self.recorder.stop()
+                timer = threading.Timer(DOUBLE_TAP_WINDOW, self._finalize_tap,
+                                        args=(key, audio, self._active))
+                timer.daemon = True
+                self._pending_tap_timer[key] = timer
+                timer.start()
+                return
+
+            self._last_tap_release.pop(key, None)  # a real hold breaks any pending double-click
+            audio = self.recorder.stop()
+            if audio:
+                threading.Thread(target=self._process,
+                                 args=(audio, self._active), daemon=True).start()
+            else:
+                print("\r(no audio captured)\033[K", end="", flush=True)
         except Exception as exc:
             self._held_key = None
             print(f"\r✗  {exc}\033[K", flush=True)
+
+    def _finalize_tap(self, key, audio, active) -> None:
+        """Runs DOUBLE_TAP_WINDOW after a lone tap's release, unless a second
+        tap cancelled it first (see the double-click branch in _on_release)."""
+        self._pending_tap_timer.pop(key, None)
+        if audio:
+            threading.Thread(target=self._process,
+                             args=(audio, active), daemon=True).start()
+        else:
+            print("\r(no audio captured)\033[K", end="", flush=True)
 
     def _process(self, audio_bytes: bytes, model) -> None:
         self._busy = True
@@ -335,6 +534,10 @@ class DictaFlow:
         # transcribe with the model bound to the key that was held
         cfg = {**self.cfg, "local_whisper_model": path}
         try:
+            if _is_near_silent(audio_bytes):
+                print("\r✗  No speech detected (ignored)\033[K", flush=True)
+                return
+
             print(f"\r⚙  Transcribing… [{name}]\033[K", end="", flush=True)
             wav_path = AudioRecorder.to_wav(audio_bytes)
             raw      = transcribe(wav_path, cfg)
@@ -376,9 +579,8 @@ class DictaFlow:
     def run(self) -> None:
         print("DictaFlow is running.")
         for key, (name, _) in KEY_MODELS.items():
-            label = "right-⌥ (Option)" if key == kb.Key.alt_r else \
-                    "right-⌘ (Command)" if key == kb.Key.cmd_r else str(key)
-            print(f"  Hold {label} → {name}")
+            print(f"  Hold {_key_label(key)} → {name}")
+            print(f"  Double-tap {_key_label(key)} → hands-free {name} (tap once to stop)")
         print(f"  Transcripts → {TRANSCRIPT_FILE}")
         print("  Ctrl+C to quit.\n")
         threading.Thread(target=self._warmup, daemon=True).start()
@@ -387,7 +589,11 @@ class DictaFlow:
         )
         listener.start()
         try:
-            listener.join()
+            # pynput's listener runs in its own thread; this thread instead
+            # pumps AppKit's event loop so the bubble window can actually
+            # draw/update/respond while dictation happens in the background.
+            while listener.running:
+                self.bubble.pump()
         except KeyboardInterrupt:
             listener.stop()
             print("\nBye!")
