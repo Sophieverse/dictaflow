@@ -44,9 +44,12 @@ TRANSCRIPT_FILE = TRANSCRIPTS_DIR / "transcripts.md"  # single rolling log
 SAMPLE_RATE     = 16000
 CHANNELS        = 1
 
-# Local model folders.
-TURBO_MODEL = "/Users/melod/dictaflow/models/whisper-large-v3-turbo"
-SMALL_MODEL = "/Users/melod/dictaflow/models/whisper-small-mlx"
+# Local model folders, resolved next to this script so a fresh clone works
+# without editing paths. mlx_whisper also accepts a Hugging Face repo id here
+# (e.g. "mlx-community/whisper-large-v3-turbo") if you'd rather it download.
+MODELS_DIR  = Path(__file__).resolve().parent / "models"
+TURBO_MODEL = str(MODELS_DIR / "whisper-large-v3-turbo")
+SMALL_MODEL = str(MODELS_DIR / "whisper-small-mlx")
 
 # Hold-to-talk keys → which model transcribes. Hold a key, speak, release.
 #   right-⌥ (Option)  → Turbo, most accurate (~1.8s)
@@ -316,12 +319,25 @@ def save_transcript(raw: str, cleaned: str) -> Path:
 
 
 # ──────────────────────────────────────────────────────────────
-# Bubble indicator — small floating pill, bottom-center of the screen,
-# shown only while hands-free listening is active.
+# Bubble indicator — small floating pill, bottom-center of the screen.
+# Visible whenever DictaFlow is doing something to your audio: recording
+# (held key OR hands-free) and transcribing. If no pill, it isn't listening.
+#
+# Threading: every caller below (pynput's listener thread, the transcription
+# worker thread) only ever writes a *desired state* under a lock. The actual
+# AppKit calls happen exclusively in pump(), which runs on the main thread —
+# AppKit is not thread-safe and calling it off-main silently misbehaves.
 # ──────────────────────────────────────────────────────────────
+RECORDING_COLOR    = (0.85, 0.20, 0.20)   # red   — capturing audio
+TRANSCRIBING_COLOR = (0.95, 0.62, 0.10)   # amber — working on it
+
+
 class BubbleWindow:
     def __init__(self):
         self._ok = False
+        self._lock    = threading.Lock()
+        self._desired = None   # (text, rgb) we want on screen, or None for hidden
+        self._shown   = None   # what pump() has actually put on screen
         try:
             from Cocoa import (
                 NSApplication, NSWindow, NSColor, NSMakeRect,
@@ -333,6 +349,7 @@ class BubbleWindow:
             self._Quartz = Quartz
             self._mask   = NSAnyEventMask
 
+            self._NSColor = NSColor
             self._app = NSApplication.sharedApplication()
             self._app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
@@ -368,23 +385,47 @@ class BubbleWindow:
         except Exception as exc:
             print(f"(bubble indicator unavailable, continuing without it: {exc})")
 
-    def show(self, text: str) -> None:
-        if not self._ok:
-            return
-        self._label.setStringValue_(text)
-        self._win.orderFrontRegardless()
+    def set(self, text: str | None, color=RECORDING_COLOR) -> None:
+        """Ask for the pill to show `text` (or hide it, when text is None).
+        Safe to call from ANY thread — nothing touches AppKit here, pump()
+        picks the change up on the main thread within one tick (~50ms)."""
+        with self._lock:
+            self._desired = None if text is None else (text, color)
+
+    # Kept for readability at the call sites.
+    def show(self, text: str, color=RECORDING_COLOR) -> None:
+        self.set(text, color)
 
     def hide(self) -> None:
-        if self._ok:
+        self.set(None)
+
+    def _reconcile(self) -> None:
+        """Main thread only: make the screen match whatever set() last asked for."""
+        with self._lock:
+            desired = self._desired
+        if desired == self._shown:
+            return
+        if desired is None:
             self._win.orderOut_(None)
+        else:
+            text, (r, g, b) = desired
+            self._label.setStringValue_(text)
+            self._win.setBackgroundColor_(
+                self._NSColor.colorWithCalibratedRed_green_blue_alpha_(r, g, b, 0.92)
+            )
+            self._win.orderFrontRegardless()
+            self._win.displayIfNeeded()
+        self._shown = desired
 
     def pump(self, seconds: float = 0.05) -> None:
-        """Drain pending AppKit events for a short window. Call this from the
-        main-thread loop in place of a bare sleep — pynput's listener runs in
-        its own thread, so this is the only thing keeping the bubble alive."""
+        """Drain pending AppKit events for a short window and apply any pending
+        state change. Call this from the main-thread loop in place of a bare
+        sleep — pynput's listener runs in its own thread, so this is the only
+        thing keeping the bubble alive."""
         if not self._ok:
             time.sleep(seconds)
             return
+        self._reconcile()
         until = self._Quartz.NSDate.dateWithTimeIntervalSinceNow_(seconds)
         event = self._app.nextEventMatchingMask_untilDate_inMode_dequeue_(
             self._mask, until, "kCFRunLoopDefaultMode", True,
@@ -440,10 +481,12 @@ class DictaFlow:
                 self._press_time[key] = time.monotonic()
                 self._active   = KEY_MODELS[key]   # (name, path)
                 print(f"\r🎙  Recording… [{self._active[0]}]\033[K", end="", flush=True)
+                self.bubble.show(f"🎙 Recording… ({self._active[0]})", RECORDING_COLOR)
                 self.recorder.start()
         except Exception as exc:
             self._held_key = None
             self._active   = None
+            self.bubble.hide()
             # -9986 etc. = mic busy/unavailable (often another app holds it)
             print(f"\r✗  mic unavailable ({exc}); is another app using it?\033[K",
                   flush=True)
@@ -499,6 +542,7 @@ class DictaFlow:
                 # if no second tap arrives to cancel it.
                 self._last_tap_release[key] = now
                 audio = self.recorder.stop()
+                self.bubble.hide()
                 timer = threading.Timer(DOUBLE_TAP_WINDOW, self._finalize_tap,
                                         args=(key, audio, self._active))
                 timer.daemon = True
@@ -508,6 +552,7 @@ class DictaFlow:
 
             self._last_tap_release.pop(key, None)  # a real hold breaks any pending double-click
             audio = self.recorder.stop()
+            self.bubble.hide()   # _process re-shows it in "transcribing" amber
             if audio:
                 threading.Thread(target=self._process,
                                  args=(audio, self._active), daemon=True).start()
@@ -515,6 +560,7 @@ class DictaFlow:
                 print("\r(no audio captured)\033[K", end="", flush=True)
         except Exception as exc:
             self._held_key = None
+            self.bubble.hide()
             print(f"\r✗  {exc}\033[K", flush=True)
 
     def _finalize_tap(self, key, audio, active) -> None:
@@ -534,6 +580,7 @@ class DictaFlow:
         # transcribe with the model bound to the key that was held
         cfg = {**self.cfg, "local_whisper_model": path}
         try:
+            self.bubble.show(f"⚙ Transcribing… ({name})", TRANSCRIBING_COLOR)
             if _is_near_silent(audio_bytes):
                 print("\r✗  No speech detected (ignored)\033[K", flush=True)
                 return
@@ -559,6 +606,7 @@ class DictaFlow:
         finally:
             if wav_path and os.path.exists(wav_path):
                 os.unlink(wav_path)
+            self.bubble.hide()
             self._busy = False
 
     def _warmup(self) -> None:
