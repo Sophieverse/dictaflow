@@ -41,6 +41,7 @@ CONFIG_DIR      = Path.home() / ".dictaflow"
 CONFIG_FILE     = CONFIG_DIR / "config.json"
 TRANSCRIPTS_DIR = Path.home() / "transcriptions"
 TRANSCRIPT_FILE = TRANSCRIPTS_DIR / "transcripts.md"  # single rolling log
+EVENTS_FILE     = TRANSCRIPTS_DIR / "events.jsonl"    # structured stats feed
 SAMPLE_RATE     = 16000
 CHANNELS        = 1
 
@@ -79,6 +80,15 @@ DEFAULT_CONFIG: dict = {
     "groq_api_key":     "",
     "transcribe_model": "whisper-large-v3",
     "cleanup_model":    "llama-3.3-70b-versatile",
+
+    # Pinning the language skips Whisper's language-detection pass, which costs
+    # a whole extra encoder forward — measured 1.93s → 1.05s on Turbo. Set to
+    # null to auto-detect if you dictate in more than one language.
+    "language": "en",
+    # Seeded into the decoder as if it were preceding text, which biases it
+    # toward your vocabulary — names, jargon, acronyms it would otherwise
+    # spell phonetically. Keep it short; long prompts can bleed into output.
+    "initial_prompt": "",
 
     # ── shared ─────────────────────────────────────────────────
     "cleanup_enabled":  True,
@@ -192,13 +202,44 @@ def transcribe(wav_path: str, cfg: dict) -> str:
 
 def _transcribe_local(wav_path: str, cfg: dict) -> str:
     import mlx_whisper  # lazy: only needed for the local backend
+    opts: dict = {}
+    if cfg.get("language"):
+        # Without this, transcribe.py runs model.detect_language() first — an
+        # entire extra encoder pass just to conclude you're speaking English.
+        # Whisper is compute-bound on the encoder (it pads every clip to 30s
+        # regardless of how long you spoke), so removing one of two encoder
+        # passes is close to a straight halving: 1.93s → 1.05s on Turbo.
+        opts["language"] = cfg["language"]
+    if cfg.get("initial_prompt"):
+        opts["initial_prompt"] = cfg["initial_prompt"]
     result = mlx_whisper.transcribe(
         wav_path,
         path_or_hf_repo=cfg["local_whisper_model"],
         condition_on_previous_text=False,  # stops repetition loops carrying forward
+        **opts,
     )
     text = result["text"].strip()
-    return "" if _is_repetition_hallucination(text) else text
+    if _is_repetition_hallucination(text) or _is_stock_hallucination(text):
+        return ""
+    return text
+
+
+# Whisper's training data is largely YouTube captions, so when it's handed
+# audio with no intelligible speech it doesn't return empty — it emits the
+# phrase that most often captions such a moment. These are the ones that
+# actually show up in the logs. Only ever matched against the WHOLE output,
+# so dictating "thank you" inside a real sentence is unaffected.
+STOCK_HALLUCINATIONS = {
+    "thank you", "thanks for watching", "thank you for watching",
+    "thanks for watching!", "you", "bye", "bye.", "okay", "beep",
+    "please subscribe", "subscribe to my channel", "the end", "silence",
+    "music", "applause", "foreign",
+}
+
+
+def _is_stock_hallucination(text: str) -> bool:
+    stripped = text.lower().strip(" .,!?\"'…-[]()")
+    return stripped in STOCK_HALLUCINATIONS
 
 
 def _is_repetition_hallucination(text: str) -> bool:
@@ -212,17 +253,54 @@ def _is_repetition_hallucination(text: str) -> bool:
     return top / len(words) > 0.5
 
 
-SILENCE_PEAK_THRESHOLD = 300  # int16 peak; see check_audio.py (peak<50 = no mic signal)
+# Speech vs. noise, decided on spectral SHAPE rather than loudness.
+#
+# This used to be a peak-amplitude threshold, and amplitude turns out to be the
+# wrong axis entirely: measured on this mic, room tone at peak 331 makes Whisper
+# hallucinate, while genuine speech at peak 90 transcribes perfectly. No
+# amplitude threshold can separate those, which is why the old gate both
+# swallowed real dictation ("No speech detected" on ordinary quiet talking) and
+# let noise through as "Thank you."
+#
+# Spectral flatness — geometric mean over arithmetic mean of the power spectrum
+# — measures how noise-like a signal is. Noise spreads energy evenly across
+# frequency (ratio → 1.0); speech concentrates it into formant peaks (→ 0.0).
+# Measured separation is about three orders of magnitude:
+#     noise (silence, mic hiss, room tone)         0.561 – 1.000
+#     speech, incl. quiet AND unvoiced/whispered   0.001
+# so 0.15 sits in a very large empty gap. Crucially, whispering stays on the
+# speech side: whispering removes the voiced pitch harmonics but keeps the
+# formant structure, which is what this actually measures.
+FLATNESS_THRESHOLD = 0.15
+DEAD_MIC_PEAK      = 8   # below this there is no signal at all, not even noise
 
 
-def _is_near_silent(audio_bytes: bytes) -> bool:
-    """A too-brief key-tap often captures only mic noise, not speech. Whisper
-    doesn't reliably return empty text for that — it sometimes hallucinates a
-    stock phrase from its training data instead (e.g. 'Thank you.',
-    'Thanks for watching.'). Catch it on peak amplitude *before* calling
-    Whisper so we never feed it near-silent audio in the first place."""
-    peak = int(np.abs(np.frombuffer(audio_bytes, dtype="int16")).max(initial=0))
-    return peak < SILENCE_PEAK_THRESHOLD
+def _spectral_flatness(samples: "np.ndarray") -> float:
+    """Median flatness over the loudest frames of the clip.
+
+    Restricted to loud frames on purpose: every real dictation begins and ends
+    with a moment of silence while you find the key, and that silence is
+    perfectly flat. Averaging over the whole clip would let that leading and
+    trailing noise drag a genuine utterance up over the threshold.
+    """
+    x = samples.astype(np.float32) / 32768.0
+    n = 512
+    if len(x) < n * 4:
+        return 1.0                       # too short to judge — treat as noise
+    frames = np.lib.stride_tricks.sliding_window_view(x, n)[:: n // 2]
+    energy = (frames ** 2).sum(axis=1)
+    loud   = frames[energy >= np.percentile(energy, 70)]
+    spec   = np.abs(np.fft.rfft(loud * np.hanning(n), axis=1)) ** 2 + 1e-12
+    flat   = np.exp(np.log(spec).mean(axis=1)) / spec.mean(axis=1)
+    return float(np.median(flat))
+
+
+def _has_speech(audio_bytes: bytes) -> bool:
+    """True if this clip contains something worth sending to Whisper."""
+    samples = np.frombuffer(audio_bytes, dtype="int16")
+    if int(np.abs(samples).max(initial=0)) < DEAD_MIC_PEAK:
+        return False
+    return _spectral_flatness(samples) < FLATNESS_THRESHOLD
 
 
 def _transcribe_groq(wav_path: str, cfg: dict) -> str:
@@ -316,6 +394,23 @@ def save_transcript(raw: str, cleaned: str) -> Path:
         if cleaned != raw:                      # only when LLM cleanup altered it
             f.write(f"\n*Raw:* {raw}\n")
     return TRANSCRIPT_FILE
+
+
+def log_event(**fields) -> None:
+    """Append one dictation to the stats log the dashboard reads.
+
+    JSONL rather than more Markdown because the dashboard needs to aggregate
+    (words per day, latency percentiles) and transcripts.md is a prose format
+    that has to be re-parsed to get at any of that. Best-effort: a stats write
+    must never be able to lose you a transcript, so failures are swallowed.
+    """
+    try:
+        TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+        fields["ts"] = datetime.datetime.now().isoformat(timespec="seconds")
+        with open(EVENTS_FILE, "a") as f:
+            f.write(json.dumps(fields) + "\n")
+    except Exception:
+        pass
 
 
 # ──────────────────────────────────────────────────────────────
@@ -577,12 +672,24 @@ class DictaFlow:
         self._busy = True
         wav_path   = None
         name, path = model
+        # Re-read config each time rather than using the copy from startup, so
+        # edits made in the dashboard take effect on the next dictation instead
+        # of needing an agent restart. It's a small JSON read against a run
+        # that's about to spend a second in the encoder.
+        try:
+            self.cfg = load_config()
+        except Exception:
+            pass                                  # keep the last good config
         # transcribe with the model bound to the key that was held
         cfg = {**self.cfg, "local_whisper_model": path}
+        audio_secs = len(audio_bytes) / 2 / SAMPLE_RATE   # int16 = 2 bytes/sample
+        started    = time.monotonic()
         try:
             self.bubble.show(f"⚙ Transcribing… ({name})", TRANSCRIBING_COLOR)
-            if _is_near_silent(audio_bytes):
+            if not _has_speech(audio_bytes):
                 print("\r✗  No speech detected (ignored)\033[K", flush=True)
+                log_event(model=name, audio_secs=round(audio_secs, 2),
+                          outcome="no_speech")
                 return
 
             print(f"\r⚙  Transcribing… [{name}]\033[K", end="", flush=True)
@@ -591,14 +698,20 @@ class DictaFlow:
 
             if not raw:
                 print("\r✗  No speech detected (ignored)\033[K", flush=True)
+                log_event(model=name, audio_secs=round(audio_secs, 2),
+                          outcome="rejected")
                 return
 
             cleaned = cleanup(raw, cfg)
+            latency = time.monotonic() - started
 
             paste_text(cleaned)
             tpath = save_transcript(raw, cleaned)
+            log_event(model=name, audio_secs=round(audio_secs, 2),
+                      latency=round(latency, 2), words=len(cleaned.split()),
+                      chars=len(cleaned), text=cleaned, outcome="ok")
             short = cleaned[:70] + ("…" if len(cleaned) > 70 else "")
-            print(f"\r✓  [{name}] {short}\033[K", flush=True)
+            print(f"\r✓  [{name}] {short}  ({latency:.1f}s)\033[K", flush=True)
             print(f"   → {tpath}", flush=True)
 
         except Exception as exc:

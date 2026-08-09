@@ -21,8 +21,22 @@ A floating pill appears at the bottom of the screen whenever DictaFlow is
 listening (red) or transcribing (amber), so you always know whether the mic is
 hot. No pill = not recording.
 
-Every transcript is appended to `~/transcriptions/transcripts.md`. There's also
-a small web dashboard (`dashboard.py`, <http://localhost:7755>) to search them.
+Every transcript is appended to `~/transcriptions/transcripts.md`.
+
+## Dashboard
+
+`dashboard.py` serves <http://localhost:7755> — standard library only, no
+dependencies:
+
+- **Overview** — words dictated, time saved vs typing, daily streak, speaking
+  pace, words-per-day chart, and median/p90 transcription latency per model.
+- **History** — every transcript, searchable, with one-click copy.
+- **Settings** — language, vocabulary hint, and cleanup toggle. Changes take
+  effect on your next dictation; no restart needed.
+
+It reads two files: `transcripts.md` for what you said, and `events.jsonl` for
+how well it worked (including the attempts that produced no text, so the
+rejection rate is visible rather than silent).
 
 ## Requirements
 
@@ -81,6 +95,12 @@ If you re-grant permissions afterwards, use `bootout` + `bootstrap` rather than
 
 - `backend`: `"local"` (default, fully offline) or `"groq"` (cloud Whisper +
   llama-3.3-70b, needs `groq_api_key`)
+- `language`: `"en"` by default. Leave it set unless you dictate in more than
+  one language — see the speed note below.
+- `initial_prompt`: a short list of names, acronyms and jargon you use often.
+  It's fed to the decoder as if it were preceding text, which biases it away
+  from spelling your vocabulary phonetically. Keep it short; long prompts can
+  bleed into the output.
 - `cleanup_enabled`: run a local Ollama model over the transcript to tidy it up.
   Off by default — Whisper already punctuates well, and it added ~40s for no
   real gain.
@@ -90,9 +110,36 @@ If you re-grant permissions afterwards, use `bootout` + `bootstrap` rather than
 - Quantizing the models (8/4-bit) gives **no speedup** on Apple Silicon. Whisper
   pads every clip to 30s of mel spectrogram and runs the full encoder regardless
   of how long you actually spoke, so it's compute-bound, not memory-bound.
-- Near-silent clips are dropped before they reach Whisper. Feeding it silence
-  reliably produces hallucinated `"Thank you."` — an artifact of training on
-  YouTube captions, where silence is often captioned "thanks for watching".
+- **Pinning `language` nearly halves latency.** Because the encoder is the whole
+  cost, and because mlx-whisper runs `detect_language()` — an entire extra
+  encoder pass — whenever no language is set, removing that pass takes Turbo
+  from **1.93s to 0.99s**. This is by far the biggest speed lever available;
+  quantization and smaller models both matter less.
+- **Loudness is the wrong axis for detecting speech.** This started as a peak
+  amplitude gate, and it failed in both directions: room tone at peak 331 got
+  transcribed as `"Thank you."`, while genuine quiet speech at peak 90
+  transcribed *perfectly* but was thrown away as silence. No threshold can
+  separate those, because the difference isn't level.
+  What does separate them is **spectral flatness** — the ratio of the geometric
+  to the arithmetic mean of the power spectrum. Noise spreads energy evenly
+  across frequency (→ 1.0); speech concentrates it into formants (→ 0.0).
+  Measured here: noise 0.561–1.000, speech 0.001, including quiet *and*
+  whispered speech. Whispering removes the voiced pitch harmonics but keeps the
+  formant structure, so it stays firmly on the speech side of the gap.
+- **Whisper's own confidence signals are useless for this.** The obvious fix is
+  to gate on `no_speech_prob`, but it reports **0.00 for pure digital silence**,
+  and `avg_logprob` doesn't separate either — silence scores −0.21 while real
+  quiet speech scores −0.24. The model is *more* confident about its
+  hallucination than about your actual words.
+- Whisper's training data is largely YouTube captions, so on unintelligible
+  audio it emits the phrase that most often captions such a moment. Anything
+  that survives the gate is checked against a small blocklist (`"Thank you."`,
+  `"Thanks for watching"`, …), matched only against the **whole** output so
+  saying "thank you" inside a real sentence is unaffected.
+- Gain-normalising quiet audio before transcription does **nothing** — a
+  plausible idea worth recording as a dead end. Whisper's log-mel front-end
+  already normalises per clip, so word error rate is identical from peak 23149
+  all the way down to peak 199.
 - The mic is pinned to the built-in microphone rather than the system default.
   Recording from Bluetooth headphones forces macOS to renegotiate A2DP → HFP
   mid-stream, which throws PortAudio `-9986` errors.

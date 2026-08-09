@@ -3,130 +3,273 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DictaFlow · Transcripts</title>
+<title>DictaFlow</title>
 <style>
   :root {
-    --bg: #0d0f12; --panel: #16191f; --panel-2: #1c2027;
-    --text: #f4f6f8; --muted: #9aa3ad; --accent: #6ea8fe; --border: #262b33;
+    --bg:#0b0d10; --panel:#151920; --panel-2:#1b212a; --border:#2a313c;
+    --text:#ffffff; --soft:#e6ebf2;          /* never grey on black — soft is near-white */
+    --accent:#7cc4ff; --good:#5ddba0; --warn:#ffcb6b; --bad:#ff7b72;
   }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--bg); color: var(--text);
-    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  }
-  header {
-    position: sticky; top: 0; z-index: 5; background: rgba(13,15,18,.92);
-    backdrop-filter: blur(8px); border-bottom: 1px solid var(--border);
-    padding: 18px 24px;
-  }
-  .title { font-size: 20px; font-weight: 700; letter-spacing: -.01em; }
-  .title span { color: var(--accent); }
-  .stats { display: flex; gap: 22px; margin-top: 10px; flex-wrap: wrap; }
-  .stat { color: var(--muted); font-size: 13px; }
-  .stat b { color: var(--text); font-size: 16px; font-weight: 600; }
-  .wrap { max-width: 820px; margin: 0 auto; padding: 20px 24px 80px; }
-  #search {
-    width: 100%; padding: 12px 14px; margin-bottom: 22px; border-radius: 10px;
-    background: var(--panel-2); border: 1px solid var(--border);
-    color: var(--text); font-size: 15px;
-  }
-  #search::placeholder { color: var(--muted); }
-  #search:focus { outline: none; border-color: var(--accent); }
-  .day-label {
-    color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: .06em; margin: 26px 0 10px;
-  }
-  .card {
-    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
-    padding: 14px 16px; margin-bottom: 12px; position: relative;
-  }
-  .card:hover { border-color: #333a44; }
-  .card .time { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
-  .card .body { white-space: pre-wrap; word-break: break-word; }
-  .card .copy {
-    position: absolute; top: 12px; right: 12px; background: var(--panel-2);
-    border: 1px solid var(--border); color: var(--muted); border-radius: 7px;
-    padding: 4px 10px; font-size: 12px; cursor: pointer; opacity: 0;
-    transition: opacity .12s;
-  }
-  .card:hover .copy { opacity: 1; }
-  .card .copy:hover { color: var(--text); border-color: var(--accent); }
-  .card .copy.done { color: #5fd08a; border-color: #5fd08a; }
-  .raw { color: var(--muted); font-size: 13px; margin-top: 8px;
-         padding-top: 8px; border-top: 1px solid var(--border); }
-  .empty { color: var(--muted); text-align: center; padding: 60px 0; }
-  .hidden { display: none; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  a { color:var(--accent); }
+
+  header { position:sticky; top:0; z-index:10; background:rgba(11,13,16,.94);
+           backdrop-filter:blur(10px); border-bottom:1px solid var(--border);
+           padding:16px 28px; display:flex; align-items:center; gap:16px; }
+  .brand { font-size:19px; font-weight:700; letter-spacing:-.02em; }
+  .brand span { color:var(--accent); }
+  .pill { margin-left:auto; display:flex; align-items:center; gap:8px;
+          font-size:13px; background:var(--panel-2); border:1px solid var(--border);
+          padding:6px 12px; border-radius:999px; }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--bad); }
+  .dot.on { background:var(--good); box-shadow:0 0 0 4px rgba(93,219,160,.16); }
+
+  nav { display:flex; gap:4px; padding:0 28px; border-bottom:1px solid var(--border); }
+  nav button { background:none; border:0; color:var(--soft); font-size:14px;
+               padding:12px 14px; cursor:pointer; border-bottom:2px solid transparent; }
+  nav button.sel { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
+
+  .wrap { max-width:1040px; margin:0 auto; padding:26px 28px 90px; }
+  /* 300px keeps six cards as two clean rows of three at full width rather
+     than five across with one orphan underneath. */
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:14px; }
+  .card { background:var(--panel); border:1px solid var(--border);
+          border-radius:14px; padding:16px 18px; }
+  .card .k { font-size:12px; text-transform:uppercase; letter-spacing:.07em;
+             color:var(--soft); opacity:.85; }
+  .card .v { font-size:30px; font-weight:700; letter-spacing:-.02em; margin-top:4px; }
+  .card .s { font-size:12.5px; color:var(--soft); opacity:.85; }
+
+  h2 { font-size:14px; text-transform:uppercase; letter-spacing:.07em;
+       color:var(--soft); margin:34px 0 12px; font-weight:600; }
+
+  .chart { display:flex; align-items:flex-end; gap:3px; height:110px;
+           background:var(--panel); border:1px solid var(--border);
+           border-radius:14px; padding:14px; }
+  .bar { flex:1; background:var(--accent); border-radius:3px 3px 0 0;
+         min-height:2px; opacity:.85; }
+  .bar:hover { opacity:1; }
+
+  table { width:100%; border-collapse:collapse; background:var(--panel);
+          border:1px solid var(--border); border-radius:14px; overflow:hidden; }
+  th,td { text-align:left; padding:10px 16px; font-size:14px;
+          border-bottom:1px solid var(--border); }
+  th { color:var(--soft); font-weight:600; font-size:12px;
+       text-transform:uppercase; letter-spacing:.06em; }
+  tr:last-child td { border-bottom:0; }
+
+  #search { width:100%; padding:12px 14px; margin-bottom:18px; border-radius:11px;
+            background:var(--panel-2); border:1px solid var(--border);
+            color:var(--text); font-size:15px; }
+  #search::placeholder { color:var(--soft); opacity:.7; }
+
+  .entry { background:var(--panel); border:1px solid var(--border);
+           border-radius:14px; padding:14px 18px; margin-bottom:11px; }
+  .entry .meta { display:flex; align-items:center; gap:12px; font-size:12.5px;
+                 color:var(--soft); opacity:.9; margin-bottom:6px; }
+  .entry .meta button { margin-left:auto; background:var(--panel-2);
+                        border:1px solid var(--border); color:var(--soft);
+                        border-radius:8px; padding:3px 10px; font-size:12px;
+                        cursor:pointer; }
+  .entry .meta button:hover { color:var(--text); border-color:var(--accent); }
+  .entry p { margin:0; white-space:pre-wrap; }
+  mark { background:rgba(124,196,255,.28); color:var(--text); border-radius:3px; }
+
+  label.field { display:block; margin-bottom:20px; }
+  label.field .lab { font-weight:600; margin-bottom:4px; display:block; }
+  label.field .hint { font-size:13px; color:var(--soft); opacity:.85;
+                      margin-bottom:8px; display:block; }
+  input[type=text], textarea, select {
+    width:100%; padding:10px 12px; border-radius:10px; background:var(--panel-2);
+    border:1px solid var(--border); color:var(--text); font-size:14px;
+    font-family:inherit; }
+  textarea { min-height:80px; resize:vertical; }
+  .row { display:flex; align-items:center; gap:10px; }
+  .btn { background:var(--accent); color:#04121e; border:0; border-radius:10px;
+         padding:10px 18px; font-size:14px; font-weight:600; cursor:pointer; }
+  .saved { color:var(--good); font-size:13.5px; }
+  .empty { color:var(--soft); opacity:.85; padding:24px 0; }
 </style>
 </head>
 <body>
+
 <header>
-  <div class="title">Dicta<span>Flow</span> · Transcripts</div>
-  <div class="stats" id="stats"></div>
+  <div class="brand">Dicta<span>Flow</span></div>
+  <div class="pill"><span class="dot" id="dot"></span><span id="status">checking…</span></div>
 </header>
+
+<nav>
+  <button data-tab="stats" class="sel">Overview</button>
+  <button data-tab="history">History</button>
+  <button data-tab="settings">Settings</button>
+</nav>
+
 <div class="wrap">
-  <input id="search" type="search" placeholder="Search transcripts…" autocomplete="off">
-  <div id="list"><div class="empty">Loading…</div></div>
+  <section id="stats"></section>
+  <section id="history" hidden></section>
+  <section id="settings" hidden></section>
 </div>
+
 <script>
-let ALL = [];
+const $ = s => document.querySelector(s);
+let DATA = null;
 
-function fmtTime(ts) { return ts.slice(11); }      // HH:MM:SS
-function fmtDay(ts) {
-  const d = new Date(ts.replace(' ', 'T'));
-  return d.toLocaleDateString(undefined,
-    { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+/* ---------- tabs ---------- */
+const TABS = ['stats','history','settings'];
+function showTab(name) {
+  if (!TABS.includes(name)) name = 'stats';
+  document.querySelectorAll('nav button')
+    .forEach(x => x.classList.toggle('sel', x.dataset.tab === name));
+  TABS.forEach(t => $('#' + t).hidden = (t !== name));
 }
-function esc(s) {
-  return s.replace(/[&<>]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c]));
-}
+// Driven off the hash so a tab is linkable and survives a reload.
+document.querySelectorAll('nav button')
+  .forEach(b => b.onclick = () => { location.hash = b.dataset.tab; });
+addEventListener('hashchange', () => showTab(location.hash.slice(1)));
+showTab(location.hash.slice(1));
 
-function render(entries) {
-  const list = document.getElementById('list');
-  if (!entries.length) {
-    list.innerHTML = '<div class="empty">No transcripts match.</div>';
-    return;
-  }
-  let html = '', lastDay = '';
-  for (const e of entries) {
-    const day = e.ts.slice(0, 10);
-    if (day !== lastDay) { html += `<div class="day-label">${fmtDay(e.ts)}</div>`; lastDay = day; }
-    html += `<div class="card">
-      <button class="copy" data-text="${esc(e.text).replace(/"/g,'&quot;')}">Copy</button>
-      <div class="time">${fmtTime(e.ts)} · ${e.words} word${e.words===1?'':'s'}</div>
-      <div class="body">${esc(e.text)}</div>
-      ${e.raw ? `<div class="raw"><b>Raw:</b> ${esc(e.raw)}</div>` : ''}
-    </div>`;
-  }
-  list.innerHTML = html;
+const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const plural = (n, w) => `${n.toLocaleString()} ${w}${n === 1 ? '' : 's'}`;
+
+function hours(min) {
+  if (min < 60) return min + ' min';
+  return (min / 60).toFixed(1) + ' hrs';
 }
 
-function applySearch() {
-  const q = document.getElementById('search').value.trim().toLowerCase();
-  render(q ? ALL.filter(e => e.text.toLowerCase().includes(q)) : ALL);
+/* ---------- overview ---------- */
+function renderStats(s) {
+  const lat = Object.entries(s.latency || {})
+    .map(([m, v]) => `<tr><td>${esc(m)}</td><td>${v.median}s</td><td>${v.p90}s</td><td>${v.n}</td></tr>`)
+    .join('');
+
+  const max = Math.max(1, ...s.daily.map(d => d.words));
+  const bars = s.daily.map(d =>
+    `<div class="bar" style="height:${Math.max(2, d.words / max * 100)}%"
+          title="${d.day} — ${plural(d.words, 'word')}"></div>`).join('');
+
+  $('#stats').innerHTML = `
+    <div class="grid">
+      <div class="card"><div class="k">Words dictated</div>
+        <div class="v">${s.total_words.toLocaleString()}</div>
+        <div class="s">${plural(s.count, 'dictation')}</div></div>
+      <div class="card"><div class="k">Time saved</div>
+        <div class="v">${hours(s.saved_min)}</div>
+        <div class="s">vs typing at 40 wpm</div></div>
+      <div class="card"><div class="k">Streak</div>
+        <div class="v">${s.streak}</div>
+        <div class="s">${plural(s.days, 'active day')} total</div></div>
+      <div class="card"><div class="k">This week</div>
+        <div class="v">${s.week_words.toLocaleString()}</div>
+        <div class="s">words in last 7 days</div></div>
+      <div class="card"><div class="k">Speaking pace</div>
+        <div class="v">${s.wpm ?? '—'}</div>
+        <div class="s">${s.wpm ? 'words per minute' : 'needs new dictations'}</div></div>
+      <div class="card"><div class="k">Rejected</div>
+        <div class="v">${s.reject_pct ?? '—'}${s.reject_pct != null ? '%' : ''}</div>
+        <div class="s">${s.attempts ? s.rejected + ' of ' + s.attempts + ' attempts' : 'no data yet'}</div></div>
+    </div>
+
+    <h2>Words per day · last 30 days</h2>
+    <div class="chart">${bars}</div>
+
+    <h2>Transcription latency</h2>
+    ${lat ? `<table><tr><th>Model</th><th>Median</th><th>p90</th><th>Runs</th></tr>${lat}</table>`
+          : `<div class="empty">No timing data yet — dictate something and it'll show up here.</div>`}
+  `;
 }
 
-document.getElementById('search').addEventListener('input', applySearch);
+/* ---------- history ---------- */
+function renderHistory(entries, q = '') {
+  const needle = q.trim().toLowerCase();
+  const hits = needle ? entries.filter(e => e.text.toLowerCase().includes(needle)) : entries;
+  const body = hits.length ? hits.map((e, i) => {
+    let text = esc(e.text);
+    if (needle) text = text.replace(new RegExp(`(${needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'), '<mark>$1</mark>');
+    return `<div class="entry">
+        <div class="meta"><span>${esc(e.ts)}</span><span>${plural(e.words, 'word')}</span>
+          <button data-copy="${i}">Copy</button></div>
+        <p>${text}</p></div>`;
+  }).join('') : `<div class="empty">Nothing matches “${esc(q)}”.</div>`;
 
-document.addEventListener('click', e => {
-  if (e.target.classList.contains('copy')) {
-    navigator.clipboard.writeText(e.target.dataset.text);
-    e.target.textContent = 'Copied'; e.target.classList.add('done');
-    setTimeout(() => { e.target.textContent = 'Copy'; e.target.classList.remove('done'); }, 1200);
-  }
-});
+  $('#history').innerHTML =
+    `<input id="search" placeholder="Search your transcripts…" value="${esc(q)}">` + body;
 
+  const box = $('#search');
+  box.oninput = () => { const v = box.value; renderHistory(entries, v);
+                        const b = $('#search'); b.focus(); b.setSelectionRange(v.length, v.length); };
+  $('#history').querySelectorAll('[data-copy]').forEach(b =>
+    b.onclick = () => { navigator.clipboard.writeText(hits[+b.dataset.copy].text);
+                        b.textContent = 'Copied'; setTimeout(() => b.textContent = 'Copy', 1200); });
+}
+
+/* ---------- settings ---------- */
+function renderSettings(cfg) {
+  $('#settings').innerHTML = `
+    <label class="field">
+      <span class="lab">Language</span>
+      <span class="hint">Pinning the language skips Whisper's language-detection pass —
+        a whole extra encoder run. Measured 1.9s → 1.0s on Turbo. Only set this to
+        auto-detect if you actually dictate in more than one language.</span>
+      <select id="language">
+        <option value="en">English (fastest)</option>
+        <option value="">Auto-detect (slower)</option>
+      </select>
+    </label>
+
+    <label class="field">
+      <span class="lab">Vocabulary hint</span>
+      <span class="hint">Seeded into the decoder as if it were preceding text, which
+        biases it toward names and jargon it would otherwise spell phonetically.
+        Keep it short — long hints can bleed into your transcripts.</span>
+      <textarea id="initial_prompt" placeholder="e.g. Names, acronyms and technical terms you use often."></textarea>
+    </label>
+
+    <label class="field">
+      <span class="lab">LLM cleanup</span>
+      <span class="hint">Runs a local Ollama model over each transcript to tidy it.
+        Off by default: it added roughly 40 seconds and changed almost nothing,
+        because Whisper already punctuates well.</span>
+      <span class="row"><input type="checkbox" id="cleanup_enabled" style="width:auto">
+        <span>Enable cleanup pass</span></span>
+    </label>
+
+    <div class="row"><button class="btn" id="save">Save</button>
+      <span class="saved" id="savedmsg"></span></div>
+    <p class="hint" style="margin-top:18px">Changes apply to your next dictation —
+      no restart needed.</p>
+  `;
+  $('#language').value = cfg.language ?? 'en';
+  $('#initial_prompt').value = cfg.initial_prompt ?? '';
+  $('#cleanup_enabled').checked = !!cfg.cleanup_enabled;
+
+  $('#save').onclick = async () => {
+    const body = {
+      language: $('#language').value || null,
+      initial_prompt: $('#initial_prompt').value,
+      cleanup_enabled: $('#cleanup_enabled').checked,
+    };
+    const r = await fetch('/api/settings', {method: 'POST', body: JSON.stringify(body)});
+    const j = await r.json();
+    $('#savedmsg').textContent = j.ok ? 'Saved ✓' : 'Failed: ' + j.error;
+    setTimeout(() => $('#savedmsg').textContent = '', 2500);
+  };
+}
+
+/* ---------- load ---------- */
 async function load() {
-  const r = await fetch('/api/transcripts');
-  const { entries, stats } = await r.json();
-  ALL = entries;
-  document.getElementById('stats').innerHTML = `
-    <div class="stat"><b>${stats.count}</b> transcripts</div>
-    <div class="stat"><b>${stats.total_words.toLocaleString()}</b> words</div>
-    <div class="stat"><b>${stats.days}</b> day${stats.days===1?'':'s'}</div>`;
-  applySearch();
+  const r = await fetch('/api/data');
+  DATA = await r.json();
+  $('#dot').classList.toggle('on', DATA.running);
+  $('#status').textContent = DATA.running ? 'Listening' : 'Agent not running';
+  renderStats(DATA.stats);
+  const q = $('#search') ? $('#search').value : '';
+  if (!q) renderHistory(DATA.entries);
+  if (!$('#save')) renderSettings(DATA.settings);
 }
 load();
-setInterval(load, 15000);   // auto-refresh so new dictations appear
+setInterval(load, 15000);
 </script>
 </body>
 </html>
