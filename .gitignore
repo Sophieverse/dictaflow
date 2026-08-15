@@ -10,3 +10,9 @@ venv/
 models/
 # runtime logs from the LaunchAgent
 *.log
+
+# transcripts live in ~/transcriptions, never in the repo
+transcriptions/
+
+# built app bundle — rebuild with app-src/build.sh
+DictaFlow.app/

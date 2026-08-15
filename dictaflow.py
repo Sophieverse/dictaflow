@@ -1,789 +1,623 @@
 #!/usr/bin/env python3
-"""
-DictaFlow — AI dictation powered by Groq Whisper.
-Hold right-⌥ (Option) to record; release to transcribe and paste.
-Transcripts are saved to ~/transcriptions/ as dated Markdown files.
-"""
+"""DictaFlow — local, open-weight voice dictation for macOS.
 
+Hold a key, talk, release. The audio is transcribed on your Mac and inserted
+wherever you were typing. Nothing leaves the machine.
+
+    hold right-⌥      dictate with Turbo (large-v3-turbo, most accurate)
+    hold right-⌘      dictate with Small (fastest)
+    double-tap either hands-free — keeps recording; tap again to stop
+    hold right-⌃      command mode — rewrites the selected text
+    Esc               cancel whatever is recording
+
+Run `python dictaflow.py --check` for a preflight report, or `--doctor` for a
+deeper diagnosis when something isn't working.
+"""
+from __future__ import annotations
+
+import argparse
+import atexit
 import os
+import signal
 import sys
-import json
-import wave
-import time
-import datetime
 import threading
-import tempfile
-import subprocess
+import time
 from pathlib import Path
 
-# ──────────────────────────────────────────────────────────────
-# Hard deps — fail fast with a helpful message
-# ──────────────────────────────────────────────────────────────
-def _require(pkg, install):
-    import importlib
-    try:
-        return importlib.import_module(pkg)
-    except ImportError:
-        print(f"Missing dependency: pip install {install}")
-        sys.exit(1)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-sd  = _require("sounddevice", "sounddevice")
-np  = _require("numpy",       "numpy")
-_pynput_kb = _require("pynput.keyboard", "pynput")
-kb = _pynput_kb  # pynput.keyboard module — Key, Listener live here
-# Backend-specific deps (groq, mlx_whisper) are imported lazily inside the
-# transcribe/cleanup functions so you only need the ones your backend uses.
-
-# ──────────────────────────────────────────────────────────────
-# Config
-# ──────────────────────────────────────────────────────────────
-CONFIG_DIR      = Path.home() / ".dictaflow"
-CONFIG_FILE     = CONFIG_DIR / "config.json"
-TRANSCRIPTS_DIR = Path.home() / "transcriptions"
-TRANSCRIPT_FILE = TRANSCRIPTS_DIR / "transcripts.md"  # single rolling log
-EVENTS_FILE     = TRANSCRIPTS_DIR / "events.jsonl"    # structured stats feed
-SAMPLE_RATE     = 16000
-CHANNELS        = 1
-
-# Local model folders, resolved next to this script so a fresh clone works
-# without editing paths. mlx_whisper also accepts a Hugging Face repo id here
-# (e.g. "mlx-community/whisper-large-v3-turbo") if you'd rather it download.
-MODELS_DIR  = Path(__file__).resolve().parent / "models"
-TURBO_MODEL = str(MODELS_DIR / "whisper-large-v3-turbo")
-SMALL_MODEL = str(MODELS_DIR / "whisper-small-mlx")
-
-# Hold-to-talk keys → which model transcribes. Hold a key, speak, release.
-#   right-⌥ (Option)  → Turbo, most accurate (~1.8s)
-#   right-⌘ (Command) → Small, fastest       (~0.5s)
-# (MacBook keyboards have no right-Control, so right-Command is the 2nd key.)
-KEY_MODELS = {
-    kb.Key.alt_r: ("Turbo", TURBO_MODEL),
-    kb.Key.cmd_r: ("Small", SMALL_MODEL),
-}
-
-DEFAULT_CONFIG: dict = {
-    # "local" = open-weight models on your Mac (mlx-whisper + Ollama).
-    # "groq"  = Groq cloud API (needs groq_api_key below).
-    "backend": "local",
-
-    # ── local backend ──────────────────────────────────────────
-    # Whisper model run via Apple MLX. "turbo" is fast + accurate;
-    # use ".../whisper-large-v3-mlx" for max accuracy, or
-    # ".../whisper-small-mlx" / "...-tiny-mlx" for max speed.
-    "local_whisper_model": "mlx-community/whisper-large-v3-turbo",
-    # Cleanup via a local Ollama model. Empty string OR cleanup_enabled
-    # = False skips cleanup entirely (Whisper already punctuates well).
-    "ollama_host":  "http://localhost:11434",
-    "ollama_model": "gpt-oss:20b",
-
-    # ── groq backend ───────────────────────────────────────────
-    "groq_api_key":     "",
-    "transcribe_model": "whisper-large-v3",
-    "cleanup_model":    "llama-3.3-70b-versatile",
-
-    # Pinning the language skips Whisper's language-detection pass, which costs
-    # a whole extra encoder forward — measured 1.93s → 1.05s on Turbo. Set to
-    # null to auto-detect if you dictate in more than one language.
-    "language": "en",
-    # Seeded into the decoder as if it were preceding text, which biases it
-    # toward your vocabulary — names, jargon, acronyms it would otherwise
-    # spell phonetically. Keep it short; long prompts can bleed into output.
-    "initial_prompt": "",
-
-    # ── shared ─────────────────────────────────────────────────
-    "cleanup_enabled":  True,
-    "cleanup_prompt": (
-        "You are a transcription cleanup assistant. "
-        "Fix punctuation, capitalization, and obvious speech-recognition errors. "
-        "Preserve the speaker's exact words and meaning. "
-        "Return only the cleaned text — no explanation, no quotes."
-    ),
-}
+from df import asr, config, hud, hotkeys, store          # noqa: E402
+from df.audio import Recorder, list_input_devices         # noqa: E402
+from df.session import Session                            # noqa: E402
 
 
-def load_config() -> dict:
-    CONFIG_DIR.mkdir(exist_ok=True)
-    if CONFIG_FILE.exists():
-        with open(CONFIG_FILE) as f:
-            return {**DEFAULT_CONFIG, **json.load(f)}
-    return dict(DEFAULT_CONFIG)
+BANNER = "DictaFlow"
 
 
-def save_config(cfg: dict) -> None:
-    CONFIG_DIR.mkdir(exist_ok=True)
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(cfg, f, indent=2)
+LOCK_FILE = config.CONFIG_DIR / "dictaflow.lock"
+_lock_handle = None
 
 
-def setup_wizard(cfg: dict) -> dict:
-    print("\n─── DictaFlow First-Run Setup ─────────────────────")
-    print("  Get a FREE Groq API key at: https://console.groq.com")
-    key = input("  Groq API key: ").strip()
-    if not key:
-        print("No key entered — exiting.")
-        sys.exit(1)
-    cfg["groq_api_key"] = key
-    save_config(cfg)
-    print(f"  Config saved → {CONFIG_FILE}")
-    print("───────────────────────────────────────────────────\n")
-    return cfg
+def acquire_single_instance() -> bool:
+    """Refuse to start if another DictaFlow is already running.
 
-
-# ──────────────────────────────────────────────────────────────
-# Audio
-# ──────────────────────────────────────────────────────────────
-def _builtin_mic_device() -> int | None:
-    """Pin recording to the Mac's built-in mic instead of whatever the OS
-    'default' input device is. Bluetooth headsets (AirPods, WH-1000XM4, …)
-    become the default input the moment they're connected, and CoreAudio
-    renegotiating their profile (output-only A2DP -> bidirectional HFP) the
-    instant something tries to record from them is a common source of AUHAL
-    'Invalid Property Value' / PortAudio -9986 errors. Falls back to the
-    system default if no built-in mic is found (e.g. on a different Mac)."""
-    for i, d in enumerate(sd.query_devices()):
-        if d["max_input_channels"] > 0 and "MacBook" in d["name"] and "Microphone" in d["name"]:
-            return i
-    return None
-
-
-class AudioRecorder:
-    def __init__(self):
-        self._chunks: list = []
-        self._stream = None
-        self._active = False
-
-    def start(self) -> None:
-        self._chunks = []
-        self._active = True
-        if self._stream is None:
-            # Opened once and reused across presses — negotiating a fresh
-            # CoreAudio device on every keypress (~100ms+) was eating the
-            # entire buffer on brief taps, so stop() saw zero frames.
-            self._stream = sd.InputStream(
-                samplerate=SAMPLE_RATE,
-                channels=CHANNELS,
-                dtype="int16",
-                device=_builtin_mic_device(),
-                callback=self._cb,
-            )
-        self._stream.start()
-
-    def _cb(self, indata, frames, time_info, status) -> None:
-        if self._active:
-            self._chunks.append(indata.copy())
-
-    def stop(self) -> bytes | None:
-        self._active = False
-        if self._stream:
-            self._stream.stop()
-        if not self._chunks:
-            return None
-        return np.concatenate(self._chunks, axis=0).tobytes()
-
-    @staticmethod
-    def to_wav(audio_bytes: bytes) -> str:
-        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        with wave.open(tmp.name, "wb") as wf:
-            wf.setnchannels(CHANNELS)
-            wf.setsampwidth(2)  # int16 = 2 bytes
-            wf.setframerate(SAMPLE_RATE)
-            wf.writeframes(audio_bytes)
-        return tmp.name
-
-
-# ──────────────────────────────────────────────────────────────
-# Transcription — dispatches to the configured backend
-# ──────────────────────────────────────────────────────────────
-def transcribe(wav_path: str, cfg: dict) -> str:
-    if cfg.get("backend") == "local":
-        return _transcribe_local(wav_path, cfg)
-    return _transcribe_groq(wav_path, cfg)
-
-
-def _transcribe_local(wav_path: str, cfg: dict) -> str:
-    import mlx_whisper  # lazy: only needed for the local backend
-    opts: dict = {}
-    if cfg.get("language"):
-        # Without this, transcribe.py runs model.detect_language() first — an
-        # entire extra encoder pass just to conclude you're speaking English.
-        # Whisper is compute-bound on the encoder (it pads every clip to 30s
-        # regardless of how long you spoke), so removing one of two encoder
-        # passes is close to a straight halving: 1.93s → 1.05s on Turbo.
-        opts["language"] = cfg["language"]
-    if cfg.get("initial_prompt"):
-        opts["initial_prompt"] = cfg["initial_prompt"]
-    result = mlx_whisper.transcribe(
-        wav_path,
-        path_or_hf_repo=cfg["local_whisper_model"],
-        condition_on_previous_text=False,  # stops repetition loops carrying forward
-        **opts,
-    )
-    text = result["text"].strip()
-    if _is_repetition_hallucination(text) or _is_stock_hallucination(text):
-        return ""
-    return text
-
-
-# Whisper's training data is largely YouTube captions, so when it's handed
-# audio with no intelligible speech it doesn't return empty — it emits the
-# phrase that most often captions such a moment. These are the ones that
-# actually show up in the logs. Only ever matched against the WHOLE output,
-# so dictating "thank you" inside a real sentence is unaffected.
-STOCK_HALLUCINATIONS = {
-    "thank you", "thanks for watching", "thank you for watching",
-    "thanks for watching!", "you", "bye", "bye.", "okay", "beep",
-    "please subscribe", "subscribe to my channel", "the end", "silence",
-    "music", "applause", "foreign",
-}
-
-
-def _is_stock_hallucination(text: str) -> bool:
-    stripped = text.lower().strip(" .,!?\"'…-[]()")
-    return stripped in STOCK_HALLUCINATIONS
-
-
-def _is_repetition_hallucination(text: str) -> bool:
-    """Whisper on short/near-silent clips degenerates into one word repeated
-    (e.g. 'Red Red Red…'). Detect that and discard so we never paste garbage."""
-    words = text.split()
-    if len(words) < 12:
-        return False
-    from collections import Counter
-    _, top = Counter(w.lower() for w in words).most_common(1)[0]
-    return top / len(words) > 0.5
-
-
-# Speech vs. noise, decided on spectral SHAPE rather than loudness.
-#
-# This used to be a peak-amplitude threshold, and amplitude turns out to be the
-# wrong axis entirely: measured on this mic, room tone at peak 331 makes Whisper
-# hallucinate, while genuine speech at peak 90 transcribes perfectly. No
-# amplitude threshold can separate those, which is why the old gate both
-# swallowed real dictation ("No speech detected" on ordinary quiet talking) and
-# let noise through as "Thank you."
-#
-# Spectral flatness — geometric mean over arithmetic mean of the power spectrum
-# — measures how noise-like a signal is. Noise spreads energy evenly across
-# frequency (ratio → 1.0); speech concentrates it into formant peaks (→ 0.0).
-# Measured separation is about three orders of magnitude:
-#     noise (silence, mic hiss, room tone)         0.561 – 1.000
-#     speech, incl. quiet AND unvoiced/whispered   0.001
-# so 0.15 sits in a very large empty gap. Crucially, whispering stays on the
-# speech side: whispering removes the voiced pitch harmonics but keeps the
-# formant structure, which is what this actually measures.
-FLATNESS_THRESHOLD = 0.15
-DEAD_MIC_PEAK      = 8   # below this there is no signal at all, not even noise
-
-
-def _spectral_flatness(samples: "np.ndarray") -> float:
-    """Median flatness over the loudest frames of the clip.
-
-    Restricted to loud frames on purpose: every real dictation begins and ends
-    with a moment of silence while you find the key, and that silence is
-    perfectly flat. Averaging over the whole clip would let that leading and
-    trailing noise drag a genuine utterance up over the threshold.
+    Two instances fight over the microphone: the loser's CoreAudio open can
+    block indefinitely, so the second copy starts, prints nothing, and looks
+    dead. That happened here with an instance orphaned by a launchd restart.
+    An flock is released automatically when the process dies, however it dies,
+    which a pidfile alone would not guarantee.
     """
-    x = samples.astype(np.float32) / 32768.0
-    n = 512
-    if len(x) < n * 4:
-        return 1.0                       # too short to judge — treat as noise
-    frames = np.lib.stride_tricks.sliding_window_view(x, n)[:: n // 2]
-    energy = (frames ** 2).sum(axis=1)
-    loud   = frames[energy >= np.percentile(energy, 70)]
-    spec   = np.abs(np.fft.rfft(loud * np.hanning(n), axis=1)) ** 2 + 1e-12
-    flat   = np.exp(np.log(spec).mean(axis=1)) / spec.mean(axis=1)
-    return float(np.median(flat))
-
-
-def _has_speech(audio_bytes: bytes) -> bool:
-    """True if this clip contains something worth sending to Whisper."""
-    samples = np.frombuffer(audio_bytes, dtype="int16")
-    if int(np.abs(samples).max(initial=0)) < DEAD_MIC_PEAK:
-        return False
-    return _spectral_flatness(samples) < FLATNESS_THRESHOLD
-
-
-def _transcribe_groq(wav_path: str, cfg: dict) -> str:
-    from groq import Groq  # lazy: only needed for the groq backend
-    client = Groq(api_key=cfg["groq_api_key"])
-    with open(wav_path, "rb") as f:
-        result = client.audio.transcriptions.create(
-            model=cfg["transcribe_model"],
-            file=("audio.wav", f, "audio/wav"),
-            response_format="text",
-        )
-    return (result if isinstance(result, str) else result.text).strip()
-
-
-# ──────────────────────────────────────────────────────────────
-# Cleanup — dispatches to the configured backend
-# ──────────────────────────────────────────────────────────────
-def cleanup(text: str, cfg: dict) -> str:
-    if not cfg.get("cleanup_enabled") or not text:
-        return text
-    if cfg.get("backend") == "local":
-        if not cfg.get("ollama_model"):
-            return text  # cleanup turned off by clearing the model name
-        return _cleanup_ollama(text, cfg)
-    return _cleanup_groq(text, cfg)
-
-
-def _cleanup_ollama(text: str, cfg: dict) -> str:
-    import urllib.request  # stdlib — no extra dependency for local cleanup
-    payload = json.dumps({
-        "model": cfg["ollama_model"],
-        "messages": [
-            {"role": "system", "content": cfg["cleanup_prompt"]},
-            {"role": "user",   "content": text},
-        ],
-        "stream": False,
-        "think": False,          # skip reasoning output on thinking models
-        "options": {"temperature": 0.1},
-    }).encode()
-    req = urllib.request.Request(
-        cfg["ollama_host"].rstrip("/") + "/api/chat",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        data = json.loads(resp.read())
-    return data["message"]["content"].strip() or text
-
-
-def _cleanup_groq(text: str, cfg: dict) -> str:
-    from groq import Groq  # lazy: only needed for the groq backend
-    client = Groq(api_key=cfg["groq_api_key"])
-    resp = client.chat.completions.create(
-        model=cfg["cleanup_model"],
-        messages=[
-            {"role": "system", "content": cfg["cleanup_prompt"]},
-            {"role": "user",   "content": text},
-        ],
-        max_tokens=1024,
-        temperature=0.1,
-    )
-    return resp.choices[0].message.content.strip()
-
-
-# ──────────────────────────────────────────────────────────────
-# Paste + save
-# ──────────────────────────────────────────────────────────────
-def paste_text(text: str) -> None:
-    """Copy text to clipboard then simulate ⌘V into the active field."""
-    # Save existing clipboard so we can restore it after pasting
-    old = subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
-    subprocess.run(["pbcopy"], input=text, text=True, check=True)
-    subprocess.run(
-        ["osascript", "-e",
-         'tell application "System Events" to keystroke "v" using command down'],
-        capture_output=True,
-    )
-    # Brief delay so the paste lands before we restore the clipboard
-    time.sleep(0.2)
-    subprocess.run(["pbcopy"], input=old, text=True, check=True)
-
-
-def save_transcript(raw: str, cleaned: str) -> Path:
-    """Append one dated section to the single rolling transcripts.md."""
-    TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
-    ts = datetime.datetime.now()
-    with open(TRANSCRIPT_FILE, "a") as f:
-        if f.tell() == 0:                       # brand-new file → add a title
-            f.write("# Transcripts\n")
-        f.write(f"\n## {ts.strftime('%Y-%m-%d %H:%M:%S')}\n\n{cleaned}\n")
-        if cleaned != raw:                      # only when LLM cleanup altered it
-            f.write(f"\n*Raw:* {raw}\n")
-    return TRANSCRIPT_FILE
-
-
-def log_event(**fields) -> None:
-    """Append one dictation to the stats log the dashboard reads.
-
-    JSONL rather than more Markdown because the dashboard needs to aggregate
-    (words per day, latency percentiles) and transcripts.md is a prose format
-    that has to be re-parsed to get at any of that. Best-effort: a stats write
-    must never be able to lose you a transcript, so failures are swallowed.
-    """
+    global _lock_handle
+    import fcntl
     try:
-        TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
-        fields["ts"] = datetime.datetime.now().isoformat(timespec="seconds")
-        with open(EVENTS_FILE, "a") as f:
-            f.write(json.dumps(fields) + "\n")
+        config.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        handle = open(LOCK_FILE, "w")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        handle.write(str(os.getpid()))
+        handle.flush()
+        _lock_handle = handle          # held for the process lifetime
+        return True
+    except BlockingIOError:
+        return False
     except Exception:
-        pass
+        return True                    # never let the guard itself block startup
+
+
+def log(message: str) -> None:
+    """Single-line status output. `\\r` + clear-to-EOL keeps the transient
+    'Recording…' line from leaving debris behind the final result."""
+    print(f"\r{message}\033[K", flush=True)
 
 
 # ──────────────────────────────────────────────────────────────
-# Bubble indicator — small floating pill, bottom-center of the screen.
-# Visible whenever DictaFlow is doing something to your audio: recording
-# (held key OR hands-free) and transcribing. If no pill, it isn't listening.
-#
-# Threading: every caller below (pynput's listener thread, the transcription
-# worker thread) only ever writes a *desired state* under a lock. The actual
-# AppKit calls happen exclusively in pump(), which runs on the main thread —
-# AppKit is not thread-safe and calling it off-main silently misbehaves.
+# Preflight
 # ──────────────────────────────────────────────────────────────
-RECORDING_COLOR    = (0.85, 0.20, 0.20)   # red   — capturing audio
-TRANSCRIBING_COLOR = (0.95, 0.62, 0.10)   # amber — working on it
+def check_models(cfg: dict) -> list[str]:
+    problems = []
+    for name, path in cfg["models"].items():
+        if "/" in path and not Path(path).is_absolute():
+            continue                    # a Hugging Face repo id; fetched lazily
+        if not Path(path).exists():
+            problems.append(
+                f"model {name!r} is missing at {path}\n"
+                f"    fetch it with:  .venv/bin/huggingface-cli download "
+                f"mlx-community/{Path(path).name} --local-dir {path}")
+    return problems
 
 
-class BubbleWindow:
-    def __init__(self):
-        self._ok = False
-        self._lock    = threading.Lock()
-        self._desired = None   # (text, rgb) we want on screen, or None for hidden
-        self._shown   = None   # what pump() has actually put on screen
-        try:
-            from Cocoa import (
-                NSApplication, NSWindow, NSColor, NSMakeRect,
-                NSBackingStoreBuffered, NSWindowStyleMaskBorderless,
-                NSFloatingWindowLevel, NSScreen, NSTextField,
-                NSApplicationActivationPolicyAccessory, NSAnyEventMask,
-            )
-            import Quartz
-            self._Quartz = Quartz
-            self._mask   = NSAnyEventMask
+def check_permissions() -> list[str]:
+    problems = []
+    try:
+        from ApplicationServices import AXIsProcessTrusted
+        if not AXIsProcessTrusted():
+            problems.append(
+                "Accessibility permission is not granted, so DictaFlow cannot "
+                "paste.\n    System Settings → Privacy & Security → "
+                f"Accessibility → add {sys.executable}")
+    except Exception:
+        problems.append("could not query Accessibility permission")
+    return problems
 
-            self._NSColor = NSColor
-            self._app = NSApplication.sharedApplication()
-            self._app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
-            w, h   = 220, 40
-            screen = NSScreen.mainScreen().frame()
-            x, y   = (screen.size.width - w) / 2, 50
-            self._win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-                NSMakeRect(x, y, w, h), NSWindowStyleMaskBorderless,
-                NSBackingStoreBuffered, False,
-            )
-            self._win.setLevel_(NSFloatingWindowLevel)
-            self._win.setOpaque_(False)
-            self._win.setBackgroundColor_(
-                NSColor.colorWithCalibratedRed_green_blue_alpha_(0.85, 0.2, 0.2, 0.92)
-            )
-            self._win.setHasShadow_(True)
-            cv = self._win.contentView()
-            cv.setWantsLayer_(True)
-            try:
-                cv.layer().setCornerRadius_(h / 2)   # pill shape; cosmetic only
-            except Exception:
-                pass
+def check_audio() -> list[str]:
+    try:
+        devices = list_input_devices()
+    except Exception as exc:
+        return [f"no audio system available: {exc}"]
+    if not devices:
+        return ["no input devices found"]
+    return []
 
-            self._label = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 11, w, 18))
-            self._label.setBezeled_(False)
-            self._label.setDrawsBackground_(False)
-            self._label.setEditable_(False)
-            self._label.setSelectable_(False)
-            self._label.setAlignment_(2)  # NSTextAlignmentCenter
-            self._label.setTextColor_(NSColor.whiteColor())
-            cv.addSubview_(self._label)
-            self._ok = True
-        except Exception as exc:
-            print(f"(bubble indicator unavailable, continuing without it: {exc})")
 
-    def set(self, text: str | None, color=RECORDING_COLOR) -> None:
-        """Ask for the pill to show `text` (or hide it, when text is None).
-        Safe to call from ANY thread — nothing touches AppKit here, pump()
-        picks the change up on the main thread within one tick (~50ms)."""
-        with self._lock:
-            self._desired = None if text is None else (text, color)
-
-    # Kept for readability at the call sites.
-    def show(self, text: str, color=RECORDING_COLOR) -> None:
-        self.set(text, color)
-
-    def hide(self) -> None:
-        self.set(None)
-
-    def _reconcile(self) -> None:
-        """Main thread only: make the screen match whatever set() last asked for."""
-        with self._lock:
-            desired = self._desired
-        if desired == self._shown:
-            return
-        if desired is None:
-            self._win.orderOut_(None)
+def preflight(cfg: dict, *, verbose: bool = True) -> list[str]:
+    problems = check_models(cfg) + check_permissions() + check_audio()
+    if verbose:
+        if problems:
+            print("\n⚠  Preflight found problems:\n")
+            for p in problems:
+                print(f"  • {p}")
+            print()
         else:
-            text, (r, g, b) = desired
-            self._label.setStringValue_(text)
-            self._win.setBackgroundColor_(
-                self._NSColor.colorWithCalibratedRed_green_blue_alpha_(r, g, b, 0.92)
-            )
-            self._win.orderFrontRegardless()
-            self._win.displayIfNeeded()
-        self._shown = desired
-
-    def pump(self, seconds: float = 0.05) -> None:
-        """Drain pending AppKit events for a short window and apply any pending
-        state change. Call this from the main-thread loop in place of a bare
-        sleep — pynput's listener runs in its own thread, so this is the only
-        thing keeping the bubble alive."""
-        if not self._ok:
-            time.sleep(seconds)
-            return
-        self._reconcile()
-        until = self._Quartz.NSDate.dateWithTimeIntervalSinceNow_(seconds)
-        event = self._app.nextEventMatchingMask_untilDate_inMode_dequeue_(
-            self._mask, until, "kCFRunLoopDefaultMode", True,
-        )
-        if event is not None:
-            self._app.sendEvent_(event)
+            print("✓  Preflight OK — models, permissions and audio all good.\n")
+    return problems
 
 
-def _key_label(key) -> str:
-    return "right-⌥ (Option)" if key == kb.Key.alt_r else \
-           "right-⌘ (Command)" if key == kb.Key.cmd_r else str(key)
+def setup(cfg: dict) -> int:
+    """Guided first-run: permissions, mic check, a practice dictation.
+
+    Deliberately a terminal wizard rather than a GUI, and deliberately not
+    reachable from the LaunchAgent — stdin is /dev/null under launchd, so an
+    input() prompt there would be an EOFError in a KeepAlive restart loop.
+    `main()` checks for a tty before ever calling this.
+    """
+    import numpy as np
+    from df.audio import has_speech, spectral_flatness
+
+    print(f"\n─── {BANNER} setup ─────────────────────────────\n")
+    print("  Everything runs on this Mac. No account, no API key, no audio")
+    print("  leaves the machine.\n")
+
+    print("  1. Permissions")
+    problems = check_permissions()
+    if problems:
+        for p in problems:
+            print(f"     ✗ {p}")
+        print("\n     Grant it, then run setup again.")
+    else:
+        print("     ✓ Accessibility granted")
+
+    print("\n  2. Models")
+    model_problems = check_models(cfg)
+    if model_problems:
+        for p in model_problems:
+            print(f"     ✗ {p}")
+        return 1
+    print("     ✓ both models present")
+
+    print("\n  3. Microphone")
+    for d in list_input_devices():
+        print(f"     [{d['index']}] {d['name']}")
+    input("\n     Press Return, then speak normally for 3 seconds… ")
+    rec = Recorder(preroll_ms=0)
+    ok, detail = rec.open_with_timeout(8.0)
+    if not ok:
+        print(f"     \u2717 {detail}")
+        return 1
+    try:
+        rec.start()
+        time.sleep(3.0)
+        samples = rec.stop()
+    finally:
+        rec.close()
+    peak = int(np.abs(samples).max(initial=0)) if samples.size else 0
+    flat = spectral_flatness(samples) if samples.size else 1.0
+    print(f"     captured {samples.size / config.SAMPLE_RATE:.1f}s, "
+          f"peak {peak}, flatness {flat:.3f}")
+    if peak == 0:
+        print("     ✗ pure silence — microphone permission is denied.")
+        print("       System Settings → Privacy & Security → Microphone")
+        return 1
+    if not has_speech(samples):
+        print("     ✗ that didn't register as speech. Try again closer to the mic.")
+    else:
+        print("     ✓ speech detected")
+
+    print("\n  4. Now try whispering, 3 seconds…")
+    input("     Press Return, then whisper… ")
+    ok, detail = rec.open_with_timeout(8.0)
+    if not ok:
+        print(f"     \u2717 {detail}")
+        return 1
+    try:
+        rec.start()
+        time.sleep(3.0)
+        whisper_samples = rec.stop()
+    finally:
+        rec.close()
+    wflat = spectral_flatness(whisper_samples) if whisper_samples.size else 1.0
+    wpeak = int(np.abs(whisper_samples).max(initial=0)) if whisper_samples.size else 0
+    print(f"     peak {wpeak}, flatness {wflat:.3f} "
+          f"(threshold {0.15}; lower is more speech-like)")
+    if has_speech(whisper_samples):
+        print("     ✓ whispering registers — the gate measures spectral shape,")
+        print("       not loudness, so a whisper is as valid as a shout.")
+    else:
+        print("     ✗ that whisper didn't register. Get closer to the mic —")
+        print("       roughly a hand's width. A headset mic helps a lot.")
+
+    print("\n  5. Transcribing what you just said…")
+    try:
+        transcriber = asr.Transcriber(cfg["models"]["turbo"], cfg)
+        result = transcriber.run(samples)
+        if result["text"]:
+            print(f"     ✓ “{result['text']}”")
+        else:
+            print(f"     ✗ discarded: {result['rejected']}")
+    except Exception as exc:
+        print(f"     ✗ transcription failed: {exc}")
+        return 1
+
+    cfg["onboarded"] = True
+    try:
+        config.save(cfg)
+    except Exception as exc:
+        print(f"\n  ⚠ could not save config: {exc}")
+
+    bindings = cfg.get("bindings") or DEFAULT_BINDINGS
+    print("\n  You're set up.\n")
+    for slot, key in bindings.items():
+        verb = "command mode" if slot == "command" else f"dictate ({slot})"
+        print(f"     hold {hotkeys.label(key):<10} → {verb}")
+    print(f"     {'Esc':<15} → cancel")
+    print("\n  Settings and history: http://localhost:7755")
+    print("──────────────────────────────────────────────────\n")
+    return 0
 
 
-# A press+release shorter than this counts as a "tap" (a click, not a real
-# dictation hold); two taps within the window below count as a double-click.
-TAP_MAX_HOLD      = 0.25
-DOUBLE_TAP_WINDOW = 0.4
+def doctor(cfg: dict) -> int:
+    """A deeper report, for when dictation isn't working and it isn't obvious."""
+    print(f"\n─── {BANNER} doctor ───────────────────────────────\n")
+    print(f"  python        {sys.version.split()[0]}  ({sys.executable})")
+    print(f"  config        {config.CONFIG_FILE}"
+          f"{'  ⚠ ' + cfg['_error'] if cfg.get('_error') else ''}")
+    print(f"  history       {store.HISTORY_FILE}")
+
+    print("\n  models:")
+    for name, path in cfg["models"].items():
+        exists = Path(path).exists() if Path(path).is_absolute() else None
+        mark = "✓" if exists else ("?" if exists is None else "✗")
+        print(f"    {mark} {name:<6} {path}")
+
+    print("\n  input devices:")
+    try:
+        for d in list_input_devices():
+            print(f"    [{d['index']}] {d['name']}")
+    except Exception as exc:
+        print(f"    ✗ {exc}")
+
+    print("\n  permissions:")
+    try:
+        from ApplicationServices import AXIsProcessTrusted
+        print(f"    {'✓' if AXIsProcessTrusted() else '✗'} Accessibility")
+    except Exception as exc:
+        print(f"    ? Accessibility ({exc})")
+
+    print("\n  live mic test (2s) — say something:")
+    try:
+        import numpy as np
+        from df.audio import has_speech, spectral_flatness
+        rec = Recorder(preroll_ms=0)
+        ok, detail = rec.open_with_timeout(8.0)
+        if not ok:
+            print(f"    ✗ {detail}")
+            raise RuntimeError("microphone unavailable")
+        rec.start()
+        time.sleep(2.0)
+        samples = rec.stop()
+        rec.close()
+        peak = int(np.abs(samples).max(initial=0)) if samples.size else 0
+        flat = spectral_flatness(samples) if samples.size else 1.0
+        print(f"    captured {samples.size / config.SAMPLE_RATE:.1f}s, "
+              f"peak {peak}, flatness {flat:.3f}")
+        if peak == 0:
+            print("    ✗ pure digital silence — microphone permission is "
+                  "probably denied.")
+        elif has_speech(samples):
+            print("    ✓ speech detected")
+        else:
+            print("    ✗ no speech detected (flatness above "
+                  f"{0.15}) — this clip would be discarded")
+    except Exception as exc:
+        print(f"    ✗ mic test failed: {exc}")
+
+    print("\n  command mode:")
+    try:
+        from df import command
+        ok, why = command.available(cfg)
+        print(f"    {'✓ ready' if ok else '✗ ' + why}")
+    except Exception as exc:
+        print(f"    ✗ {exc}")
+
+    entries = store.load()
+    ok = [e for e in entries if e.get("outcome") == "ok"]
+    rejected = [e for e in entries if e.get("outcome") == "rejected"]
+    print(f"\n  history: {len(entries)} entries, {len(ok)} ok, "
+          f"{len(rejected)} rejected")
+    if rejected:
+        print("  most recent rejections:")
+        for e in rejected[:5]:
+            print(f"    {e.get('ts', '')}  {e.get('rejected', '')}")
+    print("\n──────────────────────────────────────────────────\n")
+    return 0
 
 
 # ──────────────────────────────────────────────────────────────
-# Main app
+# The app
 # ──────────────────────────────────────────────────────────────
-class DictaFlow:
+class App:
     def __init__(self, cfg: dict):
-        self.cfg        = cfg
-        self.recorder   = AudioRecorder()
-        self.bubble     = BubbleWindow()
-        self._held_key  = None    # which trigger key is currently down (or None)
-        self._active    = None    # (name, model_path) for the in-flight recording
-        self._busy      = False
-        self._press_time      = {}   # key -> monotonic time of its current press
-        self._last_tap_release = {}  # key -> monotonic time of its last quick tap
-        self._handsfree_key    = None  # key currently in toggled hands-free mode
-        self._pending_tap_timer = {}  # key -> Timer waiting to see if a 2nd tap follows
+        self.cfg = cfg
+        self.bar = hud.FlowBar(cfg)
+        self.recorder = Recorder(
+            device=cfg.get("input_device"),
+            preroll_ms=int(cfg.get("preroll_ms", 500)),
+            max_seconds=int(cfg.get("max_session_seconds", 1200)),
+        )
+        self.model_paths = {
+            "turbo": cfg["models"]["turbo"],
+            "small": cfg["models"]["small"],
+            "command": cfg["models"]["turbo"],
+        }
+        self.session = Session(cfg, bar=self.bar, recorder=self.recorder,
+                               model_paths=self.model_paths, log=log)
+        self.router = None
+        self._ready = threading.Event()
+        self._stopping = threading.Event()
 
-    # pynput calls these from its own thread, so we keep them lightweight.
-    # Each trigger key maps to its own model — hold the key for the model you want.
-    # Double-tapping a key (two quick taps within DOUBLE_TAP_WINDOW) instead
-    # toggles hands-free mode: recording keeps going without holding anything
-    # down, shows the bubble, and a single tap of the same key stops it.
-    def _on_press(self, key) -> None:
-        # NOTE: exceptions raised here propagate out of pynput and kill the
-        # listener (crashing the whole app), so we catch everything.
-        try:
-            if key not in KEY_MODELS:
-                return
-            if self._handsfree_key is not None:
-                if key == self._handsfree_key:
-                    self._press_time[key] = time.monotonic()
-                return  # already listening hands-free; ignore other keys too
-            if self._held_key is None and not self._busy:
-                self._held_key = key
-                self._press_time[key] = time.monotonic()
-                self._active   = KEY_MODELS[key]   # (name, path)
-                print(f"\r🎙  Recording… [{self._active[0]}]\033[K", end="", flush=True)
-                self.bubble.show(f"🎙 Recording… ({self._active[0]})", RECORDING_COLOR)
-                self.recorder.start()
-        except Exception as exc:
-            self._held_key = None
-            self._active   = None
-            self.bubble.hide()
-            # -9986 etc. = mic busy/unavailable (often another app holds it)
-            print(f"\r✗  mic unavailable ({exc}); is another app using it?\033[K",
-                  flush=True)
-
-    def _on_release(self, key) -> None:
-        try:
-            if key not in KEY_MODELS:
-                return
-            now = time.monotonic()
-
-            if self._handsfree_key == key:
-                self._handsfree_key = None
-                self._press_time.pop(key, None)
-                self._last_tap_release.pop(key, None)
-                self.bubble.hide()
-                audio = self.recorder.stop()
-                if audio:
-                    threading.Thread(target=self._process,
-                                     args=(audio, self._active), daemon=True).start()
-                else:
-                    print("\r(no audio captured)\033[K", end="", flush=True)
-                return
-
-            if key != self._held_key:
-                return
-            self._held_key   = None
-            hold_duration    = now - self._press_time.get(key, now)
-
-            if hold_duration < TAP_MAX_HOLD:
-                last_tap = self._last_tap_release.get(key)
-                if last_tap is not None and (now - last_tap) < DOUBLE_TAP_WINDOW:
-                    # Double-click: cancel tap #1's pending finalize (its audio
-                    # was just the click noise, not real speech — discard it).
-                    # The recorder is already running (started by this second
-                    # tap's press) — let it keep going into hands-free mode
-                    # instead of stopping/restarting it.
-                    timer = self._pending_tap_timer.pop(key, None)
-                    if timer:
-                        timer.cancel()
-                    self._last_tap_release.pop(key, None)
-                    self._handsfree_key = key
-                    self.bubble.show(f"🎙 Listening… ({self._active[0]})")
-                    print(f"\r🎙  Hands-free… [{self._active[0]}] "
-                          f"(tap {_key_label(key)} again to stop)\033[K",
-                          end="", flush=True)
-                    return
-
-                # Lone tap so far — don't transcribe yet. If it's actually
-                # about to be a double-click, doing so immediately would set
-                # self._busy while we're transcribing, silently swallowing
-                # the second tap's press before we ever see it. Wait out the
-                # double-click window first; _finalize_tap transcribes only
-                # if no second tap arrives to cancel it.
-                self._last_tap_release[key] = now
-                audio = self.recorder.stop()
-                self.bubble.hide()
-                timer = threading.Timer(DOUBLE_TAP_WINDOW, self._finalize_tap,
-                                        args=(key, audio, self._active))
-                timer.daemon = True
-                self._pending_tap_timer[key] = timer
-                timer.start()
-                return
-
-            self._last_tap_release.pop(key, None)  # a real hold breaks any pending double-click
-            audio = self.recorder.stop()
-            self.bubble.hide()   # _process re-shows it in "transcribing" amber
-            if audio:
-                threading.Thread(target=self._process,
-                                 args=(audio, self._active), daemon=True).start()
-            else:
-                print("\r(no audio captured)\033[K", end="", flush=True)
-        except Exception as exc:
-            self._held_key = None
-            self.bubble.hide()
-            print(f"\r✗  {exc}\033[K", flush=True)
-
-    def _finalize_tap(self, key, audio, active) -> None:
-        """Runs DOUBLE_TAP_WINDOW after a lone tap's release, unless a second
-        tap cancelled it first (see the double-click branch in _on_release)."""
-        self._pending_tap_timer.pop(key, None)
-        if audio:
-            threading.Thread(target=self._process,
-                             args=(audio, active), daemon=True).start()
-        else:
-            print("\r(no audio captured)\033[K", end="", flush=True)
-
-    def _process(self, audio_bytes: bytes, model) -> None:
-        self._busy = True
-        wav_path   = None
-        name, path = model
-        # Re-read config each time rather than using the copy from startup, so
-        # edits made in the dashboard take effect on the next dictation instead
-        # of needing an agent restart. It's a small JSON read against a run
-        # that's about to spend a second in the encoder.
-        try:
-            self.cfg = load_config()
-        except Exception:
-            pass                                  # keep the last good config
-        # transcribe with the model bound to the key that was held
-        cfg = {**self.cfg, "local_whisper_model": path}
-        audio_secs = len(audio_bytes) / 2 / SAMPLE_RATE   # int16 = 2 bytes/sample
-        started    = time.monotonic()
-        try:
-            self.bubble.show(f"⚙ Transcribing… ({name})", TRANSCRIBING_COLOR)
-            if not _has_speech(audio_bytes):
-                print("\r✗  No speech detected (ignored)\033[K", flush=True)
-                log_event(model=name, audio_secs=round(audio_secs, 2),
-                          outcome="no_speech")
-                return
-
-            print(f"\r⚙  Transcribing… [{name}]\033[K", end="", flush=True)
-            wav_path = AudioRecorder.to_wav(audio_bytes)
-            raw      = transcribe(wav_path, cfg)
-
-            if not raw:
-                print("\r✗  No speech detected (ignored)\033[K", flush=True)
-                log_event(model=name, audio_secs=round(audio_secs, 2),
-                          outcome="rejected")
-                return
-
-            cleaned = cleanup(raw, cfg)
-            latency = time.monotonic() - started
-
-            paste_text(cleaned)
-            tpath = save_transcript(raw, cleaned)
-            log_event(model=name, audio_secs=round(audio_secs, 2),
-                      latency=round(latency, 2), words=len(cleaned.split()),
-                      chars=len(cleaned), text=cleaned, outcome="ok")
-            short = cleaned[:70] + ("…" if len(cleaned) > 70 else "")
-            print(f"\r✓  [{name}] {short}  ({latency:.1f}s)\033[K", flush=True)
-            print(f"   → {tpath}", flush=True)
-
-        except Exception as exc:
-            print(f"\r✗  {exc}\033[K", flush=True)
-        finally:
-            if wav_path and os.path.exists(wav_path):
-                os.unlink(wav_path)
-            self.bubble.hide()
-            self._busy = False
+    # ── warmup ──────────────────────────────────────────────────
+    def _open_mic(self) -> None:
+        """Open the input stream — never fatally, never indefinitely."""
+        ok, detail = self.recorder.open_with_timeout(8.0)
+        if not ok:
+            log(f"⚠  microphone: {detail}")
+            log("   Dictation will not capture audio until this is resolved.")
+            log("   Run `dictaflow.py --doctor` for a live check.")
 
     def _warmup(self) -> None:
-        """Pre-load each model (on silence) so the first dictation with either
-        key is fast. Runs off-thread; results discarded."""
-        if self.cfg.get("backend") != "local":
-            return
-        for name, path in {v[0]: v[1] for v in KEY_MODELS.values()}.items():
+        """Load both models and open the mic before the first dictation.
+
+        Models first, deliberately: opening a CoreAudio device can block for
+        a long time or forever, and when that ran first it starved model
+        loading, so `_ready` never got set and every keypress was answered
+        with "still loading models". The models are the thing dictation
+        cannot proceed without.
+
+        Failures are printed. The previous version swallowed them, so a
+        missing or corrupt model was invisible until the first real dictation
+        — at which point the audio was already gone.
+        """
+        for name in ("turbo", "small"):
+            path = self.model_paths[name]
             try:
-                silence = np.zeros(SAMPLE_RATE // 2, dtype="int16").tobytes()
-                wp = AudioRecorder.to_wav(silence)
-                transcribe(wp, {**self.cfg, "local_whisper_model": path})
-                os.unlink(wp)
-                print(f"\r✓  {name} model ready.\033[K")
-            except Exception:
-                pass  # warmup is best-effort; real dictation will still work
+                started = time.monotonic()
+                asr.warm(path)
+                log(f"✓  {name} ready ({time.monotonic() - started:.1f}s)")
+            except Exception as exc:
+                log(f"✗  {name} FAILED to load: {exc}")
+                log(f"   dictation with this model will not work. Path: {path}")
+        self._ready.set()
+        self._open_mic()
+        self._check_mic_is_live()
 
-    def run(self) -> None:
-        print("DictaFlow is running.")
-        for key, (name, _) in KEY_MODELS.items():
-            print(f"  Hold {_key_label(key)} → {name}")
-            print(f"  Double-tap {_key_label(key)} → hands-free {name} (tap once to stop)")
-        print(f"  Transcripts → {TRANSCRIPT_FILE}")
-        print("  Ctrl+C to quit.\n")
-        threading.Thread(target=self._warmup, daemon=True).start()
-        listener = kb.Listener(
-            on_press=self._on_press, on_release=self._on_release
-        )
-        listener.start()
+    def _check_mic_is_live(self) -> None:
+        """Confirm the mic is delivering signal, not just digital zeros.
+
+        macOS does not raise when microphone permission is denied — it hands
+        you a stream of silence. Without this the app looks perfectly healthy
+        and every dictation is quietly discarded as "no speech", which is
+        exactly what the old logs were full of. Better to say so at startup.
+        """
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            if self.recorder.level > 0:
+                return
+            time.sleep(0.2)
+        if self.recorder.looks_muted():
+            log("⚠  the microphone is returning pure silence. Dictation will")
+            log("   be discarded until this is fixed: System Settings →")
+            log(f"   Privacy & Security → Microphone → enable {sys.executable}")
+        # A genuinely silent room also reads as level 0, so anything short of
+        # looks_muted() (which needs an all-zero history) is not worth a
+        # warning — a false alarm here would train you to ignore real ones.
+
+    # ── key handlers ────────────────────────────────────────────
+    def on_hold_start(self, slot: str) -> None:
+        if not self._ready.is_set():
+            log("⏳  still loading models — one moment…")
+            return
+        log(f"🎙  Recording… [{slot}]")
+        self.session.begin(slot)
+
+    def on_hold_end(self, slot: str) -> None:
+        self.session.end()
+
+    def on_handsfree_on(self, slot: str) -> None:
+        if not self._ready.is_set():
+            log("⏳  still loading models — one moment…")
+            return
+        limit = int(self.cfg.get("max_session_seconds", 1200))
+        log(f"🎙  Hands-free [{slot}] — tap {hotkeys.label(self._binding(slot))} "
+            f"again to stop (auto-stops after {limit // 60} min)")
+        self.session.begin(slot, handsfree=True)
+
+    def on_handsfree_off(self, slot: str) -> None:
+        self.session.end()
+
+    def on_command_start(self) -> None:
+        if not self._ready.is_set():
+            return
+        log("🎙  Command mode — say what to do with the selected text")
+        self.session.begin("command", mode="command")
+
+    def on_command_end(self) -> None:
+        self.session.end()
+
+    def on_cancel(self) -> None:
+        self.session.cancel()
+
+    def on_tap_discarded(self, slot: str) -> None:
+        self.session.discard_tap(slot)
+
+    def on_paste_last(self) -> None:
+        """⌘⌃V — re-insert the last transcript.
+
+        The recovery path when a paste didn't land: the text is already in
+        history, so this doesn't need the audio or the model.
+        """
+        text = self.session.last_text or self._last_from_history()
+        if not text:
+            log("✗  nothing to paste — no transcripts yet.")
+            return
+        from df import inject
+        result = inject.insert(text, self.cfg)
+        if result.ok:
+            log(f"✓  re-inserted: {text[:60]}…")
+        else:
+            log(f"✗  {result.detail}")
+
+    def on_copy_last(self) -> None:
+        """⌘⌃C — put the last transcript on the clipboard without pasting."""
+        text = self.session.last_text or self._last_from_history()
+        if not text:
+            log("✗  nothing to copy — no transcripts yet.")
+            return
+        from df import inject
+        if inject.set_clipboard(text):
+            log(f"✓  copied to clipboard: {text[:60]}…")
+        else:
+            log("✗  could not write to the clipboard.")
+
+    def _last_from_history(self) -> str:
+        """Survives a restart — session.last_text is only this process's."""
+        for entry in store.load():
+            if entry.get("outcome") == "ok" and entry.get("text"):
+                return entry["text"]
+        return ""
+
+    def _binding(self, slot: str) -> str:
+        for name, key in self.cfg.get("bindings", DEFAULT_BINDINGS).items():
+            if name == slot:
+                return key
+        return slot
+
+    # ── run ─────────────────────────────────────────────────────
+    def run(self) -> int:
+        bindings = self.cfg.get("bindings") or DEFAULT_BINDINGS
+        self.router = hotkeys.KeyRouter(bindings, {
+            "on_hold_start":    self.on_hold_start,
+            "on_hold_end":      self.on_hold_end,
+            "on_handsfree_on":  self.on_handsfree_on,
+            "on_handsfree_off": self.on_handsfree_off,
+            "on_command_start": self.on_command_start,
+            "on_command_end":   self.on_command_end,
+            "on_cancel":        self.on_cancel,
+            "on_tap_discarded": self.on_tap_discarded,
+            "on_paste_last":    self.on_paste_last,
+            "on_copy_last":     self.on_copy_last,
+        })
+
+        # The help text prints BEFORE the microphone is touched. Opening a
+        # CoreAudio input device can block indefinitely when another process
+        # holds it — observed here with an orphaned instance still attached —
+        # and doing it inline meant the app started, printed nothing, and
+        # looked dead. The open now happens on the warmup thread.
+        self._print_help(bindings)
+        self.bar.set_menu([
+            (f"{BANNER} — ready", None, False),
+            ("-", None, False),
+            ("Open dashboard", self._open_dashboard, True),
+            ("Quit", self._quit, True),
+        ])
+
+        threading.Thread(target=self._warmup, daemon=True, name="df-warm").start()
+        self.router.start()
+        atexit.register(self.shutdown)
+
         try:
-            # pynput's listener runs in its own thread; this thread instead
-            # pumps AppKit's event loop so the bubble window can actually
-            # draw/update/respond while dictation happens in the background.
-            while listener.running:
-                self.bubble.pump()
+            while not self._stopping.is_set():
+                if not self.router.running:
+                    log("✗  the keyboard listener stopped — Input Monitoring "
+                        "permission may have been revoked. Exiting so launchd "
+                        "can restart me.")
+                    return 3
+                self.session.tick()
+                self.bar.pump()
         except KeyboardInterrupt:
-            listener.stop()
-            print("\nBye!")
+            pass
+        finally:
+            self.shutdown()
+        return 0
+
+    def _print_help(self, bindings: dict) -> None:
+        print(f"\n{BANNER} is running.\n")
+        for slot, key in bindings.items():
+            if slot == "command":
+                print(f"  hold {hotkeys.label(key):<10} → command mode "
+                      f"(rewrite the selection)")
+            else:
+                print(f"  hold {hotkeys.label(key):<10} → dictate with {slot}")
+                print(f"  double-tap {hotkeys.label(key):<4} → hands-free {slot}")
+        print(f"  {'Esc':<15} → cancel")
+        print(f"\n  history   {store.HISTORY_FILE}")
+        print(f"  dashboard http://localhost:7755")
+        print("  Ctrl+C to quit.\n")
+
+    def _open_dashboard(self) -> None:
+        import subprocess
+        subprocess.run(["open", "http://localhost:7755"], capture_output=True)
+
+    def _quit(self) -> None:
+        self._stopping.set()
+
+    def shutdown(self) -> None:
+        if self._stopping.is_set() and self.router is None:
+            return
+        self._stopping.set()
+        try:
+            if self.router is not None:
+                self.router.stop()
+        except Exception:
+            pass
+        try:
+            self.recorder.close()
+        except Exception:
+            pass
 
 
-# ──────────────────────────────────────────────────────────────
-def _check_ollama(cfg: dict) -> None:
-    """Warn (don't abort) if local cleanup is on but Ollama isn't reachable."""
-    if not (cfg.get("cleanup_enabled") and cfg.get("ollama_model")):
-        return
-    import urllib.request, urllib.error
-    try:
-        urllib.request.urlopen(
-            cfg["ollama_host"].rstrip("/") + "/api/tags", timeout=2
-        )
-    except Exception:
-        print("⚠  Ollama not reachable — cleanup will fail. Start it with: ollama serve")
-        print("   (or set cleanup_enabled=false in ~/.dictaflow/config.json)\n")
+DEFAULT_BINDINGS = {"turbo": "alt_r", "small": "cmd_r", "command": "ctrl_r"}
 
 
-def main() -> None:
-    cfg = load_config()
-    if cfg.get("backend") == "groq" and not cfg.get("groq_api_key"):
-        cfg = setup_wizard(cfg)
-    if cfg.get("backend") == "local":
-        _check_ollama(cfg)
-    TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
-    DictaFlow(cfg).run()
+def main() -> int:
+    parser = argparse.ArgumentParser(description=BANNER)
+    parser.add_argument("--check", action="store_true",
+                        help="run preflight checks and exit")
+    parser.add_argument("--doctor", action="store_true",
+                        help="detailed diagnosis, including a live mic test")
+    parser.add_argument("--compact", action="store_true",
+                        help="compact the history file and exit")
+    parser.add_argument("--setup", action="store_true",
+                        help="guided first-run setup with a mic and whisper test")
+    args = parser.parse_args()
+
+    cfg = config.load()
+    cfg.setdefault("bindings", DEFAULT_BINDINGS)
+
+    if args.compact:
+        print(f"compacted to {store.compact()} entries")
+        return 0
+    if args.setup:
+        return setup(cfg)
+    if args.doctor:
+        return doctor(cfg)
+    if args.check:
+        return 1 if preflight(cfg) else 0
+
+    # First run: point at the dashboard rather than prompting. An input()
+    # here would be an EOFError under launchd, where stdin is /dev/null —
+    # and with KeepAlive that becomes a silent restart loop.
+    if not cfg.get("onboarded"):
+        if sys.stdin.isatty():
+            log("First run — run `dictaflow.py --setup` for a guided check, "
+                "or just hold right-⌥ and talk.")
+        cfg["onboarded"] = True
+        try:
+            config.save(cfg)
+        except Exception:
+            pass
+
+    if cfg.get("_error"):
+        log(f"⚠  {cfg['_error']} — running with defaults.")
+
+    if not acquire_single_instance():
+        log("✗  another DictaFlow is already running; exiting so the two "
+            "don't fight over the microphone.")
+        log(f"   (lock: {LOCK_FILE})")
+        return 0                       # 0, so launchd's KeepAlive doesn't loop
+
+    imported = store.migrate_legacy()
+    if imported:
+        log(f"✓  imported {imported} entries from the previous format.")
+    store.maybe_compact()
+
+    problems = preflight(cfg, verbose=False)
+    for p in problems:
+        log(f"⚠  {p}")
+
+    # Exit cleanly on SIGTERM so launchd's stop is not a kill.
+    app = App(cfg)
+    signal.signal(signal.SIGTERM, lambda *_: app._quit())
+    return app.run()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

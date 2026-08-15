@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>DictaFlow</string>
+  <key>CFBundleDisplayName</key><string>DictaFlow</string>
+  <key>CFBundleIdentifier</key><string>com.dictaflow.app</string>
+  <key>CFBundleVersion</key><string>2.0.0</string>
+  <key>CFBundleShortVersionString</key><string>2.0.0</string>
+  <key>CFBundleExecutable</key><string>DictaFlow</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <!-- Accessory app: no Dock icon, no menu bar takeover. The Flow Bar and the
+       status item are the entire UI. -->
+  <key>LSUIElement</key><true/>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <!-- These strings are what macOS shows in the permission prompt. Without a
+       bundle carrying them, a launchd job has no stable TCC identity and is
+       handed silence instead of audio, with no error. -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>DictaFlow transcribes your speech on this Mac. Audio never leaves the machine.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>DictaFlow pastes the transcribed text into the app you were typing in.</string>
+</dict>
+</plist>

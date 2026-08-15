@@ -4,14 +4,30 @@
 <dict>
     <key>Label</key>
     <string>com.dictaflow.agent</string>
+
+    <!-- Runs the interpreter directly, which is what the Microphone,
+         Accessibility and Input Monitoring grants are attached to.
+
+         There is also a DictaFlow.app bundle in this repo that launches the
+         same script. It exists for the case where a launchd job cannot get a
+         Microphone grant at all: a bare launchd job is its own responsible
+         process with no bundle identifier, so macOS has nothing to attach the
+         grant to and silently returns digital zeros instead of audio. If you
+         hit that, point ProgramArguments at
+             DictaFlow.app/Contents/MacOS/DictaFlow
+         and re-grant Microphone + Accessibility to "DictaFlow".
+         Switching identity means re-granting BOTH — until you do, the agent
+         cannot even see keypresses. Don't switch unless you need to. -->
     <key>ProgramArguments</key>
     <array>
         <string>/Users/melod/dictaflow/.venv/bin/python</string>
         <string>-u</string>
         <string>/Users/melod/dictaflow/dictaflow.py</string>
     </array>
+
     <key>WorkingDirectory</key>
     <string>/Users/melod/dictaflow</string>
+
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
@@ -19,10 +35,16 @@
         <key>PATH</key>
         <string>/usr/bin:/bin:/usr/sbin:/sbin:/Users/melod/.local/bin</string>
     </dict>
+
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
+
+    <!-- Don't spin the CPU restarting a job that's failing at startup. -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
     <key>StandardOutPath</key>
     <string>/Users/melod/dictaflow/dictaflow.out.log</string>
     <key>StandardErrorPath</key>

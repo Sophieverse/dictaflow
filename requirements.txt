@@ -1,7 +1,17 @@
-sounddevice
-numpy
-pynput
-# local backend (default): on-device Whisper via Apple MLX
+# Core — always needed
+sounddevice          # microphone capture via PortAudio
+numpy                # audio buffers, spectral analysis
+pynput               # global hotkeys
+
+# macOS integration: the Flow Bar, menu bar item, clipboard, Accessibility
+# reads, and synthesised keystrokes. Ships with the system Python but not
+# with a fresh venv.
+pyobjc-framework-Cocoa
+pyobjc-framework-Quartz
+pyobjc-framework-ApplicationServices
+
+# Local backend (default): on-device Whisper via Apple MLX
 mlx-whisper
-# groq backend (optional cloud path): pip install groq
+
+# Groq backend (optional cloud path)
 groq

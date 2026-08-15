@@ -4,272 +4,1520 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DictaFlow</title>
+<link rel="icon" href="data:,">
 <style>
-  :root {
-    --bg:#0b0d10; --panel:#151920; --panel-2:#1b212a; --border:#2a313c;
-    --text:#ffffff; --soft:#e6ebf2;          /* never grey on black — soft is near-white */
-    --accent:#7cc4ff; --good:#5ddba0; --warn:#ffcb6b; --bad:#ff7b72;
-  }
-  * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--text);
-         font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
-  a { color:var(--accent); }
+/* ──────────────────────────────────────────────────────────────
+   Palette. Secondary text is near-white (#e8edf4), never grey:
+   grey-on-dark is unreadable for the person who has to use this.
+   ────────────────────────────────────────────────────────────── */
+:root{
+  --bg:#0a0c10;
+  --panel:#13171f;
+  --panel-2:#1a202a;
+  --panel-3:#212936;
+  --border:#262e3b;
+  --border-2:#333d4d;
+  --text:#ffffff;
+  --soft:#e8edf4;
+  --accent:#7cc4ff;
+  --accent-dim:rgba(124,196,255,.14);
+  --good:#63e0a8;
+  --warn:#ffcf7a;
+  --bad:#ff8b82;
+  --radius:14px;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
+}
+*{box-sizing:border-box;}
+html,body{height:100%;}
+body{
+  margin:0; background:var(--bg); color:var(--text);
+  font:15px/1.6 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--accent); text-decoration:none;}
+a:hover{text-decoration:underline;}
+::selection{background:rgba(124,196,255,.32);}
 
-  header { position:sticky; top:0; z-index:10; background:rgba(11,13,16,.94);
-           backdrop-filter:blur(10px); border-bottom:1px solid var(--border);
-           padding:16px 28px; display:flex; align-items:center; gap:16px; }
-  .brand { font-size:19px; font-weight:700; letter-spacing:-.02em; }
-  .brand span { color:var(--accent); }
-  .pill { margin-left:auto; display:flex; align-items:center; gap:8px;
-          font-size:13px; background:var(--panel-2); border:1px solid var(--border);
-          padding:6px 12px; border-radius:999px; }
-  .dot { width:8px; height:8px; border-radius:50%; background:var(--bad); }
-  .dot.on { background:var(--good); box-shadow:0 0 0 4px rgba(93,219,160,.16); }
+/* ── chrome ─────────────────────────────────────────────────── */
+header{
+  position:sticky; top:0; z-index:20;
+  background:rgba(10,12,16,.92); backdrop-filter:saturate(1.4) blur(12px);
+  border-bottom:1px solid var(--border);
+}
+.head-in{max-width:1240px; margin:0 auto; padding:15px 30px 0;
+         display:flex; align-items:center; gap:18px; flex-wrap:wrap;}
+.brand{font-size:19px; font-weight:700; letter-spacing:-.02em;}
+.brand span{color:var(--accent);}
+.pill{margin-left:auto; display:flex; align-items:center; gap:9px;
+      font-size:13px; color:var(--soft); background:var(--panel-2);
+      border:1px solid var(--border); padding:6px 13px; border-radius:999px;}
+.dot{width:8px; height:8px; border-radius:50%; background:var(--bad); flex:none;
+     transition:background .25s ease, box-shadow .25s ease;}
+.dot.on{background:var(--good); box-shadow:0 0 0 4px rgba(99,224,168,.15);}
+nav{max-width:1240px; margin:0 auto; padding:10px 30px 0; display:flex; gap:2px;}
+nav a{
+  color:var(--soft); font-size:14px; padding:10px 14px 12px;
+  border-bottom:2px solid transparent; border-radius:8px 8px 0 0;
+  transition:color .15s ease, background .15s ease, border-color .15s ease;
+}
+nav a:hover{background:var(--panel-2); text-decoration:none;}
+nav a.sel{color:var(--text); font-weight:600; border-bottom-color:var(--accent);}
 
-  nav { display:flex; gap:4px; padding:0 28px; border-bottom:1px solid var(--border); }
-  nav button { background:none; border:0; color:var(--soft); font-size:14px;
-               padding:12px 14px; cursor:pointer; border-bottom:2px solid transparent; }
-  nav button.sel { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
+.wrap{max-width:1240px; margin:0 auto; padding:26px 30px 110px;}
+section[hidden]{display:none;}
 
-  .wrap { max-width:1040px; margin:0 auto; padding:26px 28px 90px; }
-  /* 300px keeps six cards as two clean rows of three at full width rather
-     than five across with one orphan underneath. */
-  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:14px; }
-  .card { background:var(--panel); border:1px solid var(--border);
-          border-radius:14px; padding:16px 18px; }
-  .card .k { font-size:12px; text-transform:uppercase; letter-spacing:.07em;
-             color:var(--soft); opacity:.85; }
-  .card .v { font-size:30px; font-weight:700; letter-spacing:-.02em; margin-top:4px; }
-  .card .s { font-size:12.5px; color:var(--soft); opacity:.85; }
+/* ── typography ─────────────────────────────────────────────── */
+h2{font-size:12.5px; text-transform:uppercase; letter-spacing:.09em;
+   color:var(--soft); font-weight:600; margin:36px 0 13px;}
+h2:first-child{margin-top:4px;}
+h3{font-size:15px; font-weight:600; margin:0 0 4px;}
+p.lede{color:var(--soft); font-size:13.5px; margin:0 0 14px; max-width:74ch;}
+.note{color:var(--soft); font-size:12.5px; line-height:1.55; margin:10px 2px 0; max-width:80ch;}
+.num{font-family:var(--mono); font-variant-numeric:tabular-nums;}
 
-  h2 { font-size:14px; text-transform:uppercase; letter-spacing:.07em;
-       color:var(--soft); margin:34px 0 12px; font-weight:600; }
+/* ── cards & grids ──────────────────────────────────────────── */
+.card{background:var(--panel); border:1px solid var(--border);
+      border-radius:var(--radius); padding:17px 19px;}
+.grid{display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(300px,1fr));}
+.grid-2{display:grid; gap:14px; align-items:start;
+        grid-template-columns:repeat(auto-fit,minmax(420px,1fr));}
+.stat .k{font-size:11.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--soft);}
+.stat .v{font-size:31px; font-weight:700; letter-spacing:-.025em; margin:5px 0 2px;
+         font-variant-numeric:tabular-nums;}
+.stat .v small{font-size:15px; font-weight:600; margin-left:4px; color:var(--soft);}
+.stat .s{font-size:12.5px; color:var(--soft);}
 
-  .chart { display:flex; align-items:flex-end; gap:3px; height:110px;
-           background:var(--panel); border:1px solid var(--border);
-           border-radius:14px; padding:14px; }
-  .bar { flex:1; background:var(--accent); border-radius:3px 3px 0 0;
-         min-height:2px; opacity:.85; }
-  .bar:hover { opacity:1; }
+.banner{display:flex; gap:14px; align-items:flex-start; border-radius:var(--radius);
+        padding:15px 18px; border:1px solid var(--border); background:var(--panel);
+        margin-bottom:20px;}
+.banner.warn{border-color:rgba(255,207,122,.45); background:rgba(255,207,122,.07);}
+.banner.bad{border-color:rgba(255,139,130,.5); background:rgba(255,139,130,.08);}
+.banner .icon{font-size:17px; line-height:1.4;}
+.banner .body{flex:1; min-width:0;}
+.banner .body p{margin:4px 0 0; color:var(--soft); font-size:13.5px;}
+code, pre.cmd{font-family:var(--mono); font-size:12.5px;}
+pre.cmd{background:#080a0e; border:1px solid var(--border-2); color:var(--soft);
+        border-radius:9px; padding:10px 12px; margin:10px 0 0; overflow-x:auto;
+        white-space:pre; user-select:all;}
 
-  table { width:100%; border-collapse:collapse; background:var(--panel);
-          border:1px solid var(--border); border-radius:14px; overflow:hidden; }
-  th,td { text-align:left; padding:10px 16px; font-size:14px;
-          border-bottom:1px solid var(--border); }
-  th { color:var(--soft); font-weight:600; font-size:12px;
-       text-transform:uppercase; letter-spacing:.06em; }
-  tr:last-child td { border-bottom:0; }
+/* ── chart ──────────────────────────────────────────────────── */
+.chart{display:flex; align-items:flex-end; gap:3px; height:150px; padding:2px 0;}
+.chart .col{flex:1 1 0; min-width:0; height:100%; display:flex; align-items:flex-end;
+            border-radius:4px; transition:background .15s ease;}
+.chart .col:hover{background:var(--panel-3);}
+.chart .bar{width:100%; background:linear-gradient(180deg,#9ad2ff,#5aa9ee);
+            border-radius:4px 4px 2px 2px; min-height:3px;}
+.chart .bar.zero{background:var(--panel-3); min-height:3px;}
+.axis{display:flex; justify-content:space-between; margin-top:9px;
+      font-size:11.5px; color:var(--soft);}
 
-  #search { width:100%; padding:12px 14px; margin-bottom:18px; border-radius:11px;
-            background:var(--panel-2); border:1px solid var(--border);
-            color:var(--text); font-size:15px; }
-  #search::placeholder { color:var(--soft); opacity:.7; }
+/* ── bar list (top apps / reject reasons) ───────────────────── */
+.blist{display:flex; flex-direction:column; gap:9px;}
+.blist .row{display:grid; grid-template-columns:minmax(110px,210px) 1fr auto;
+            gap:12px; align-items:center; font-size:13.5px;}
+.blist .name{overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.blist .track{height:8px; background:var(--panel-3); border-radius:99px; overflow:hidden;}
+.blist .fill{height:100%; background:var(--accent); border-radius:99px;
+             transition:width .3s ease;}
+.blist .fill.warnfill{background:var(--warn);}
+.blist .val{font-family:var(--mono); font-size:12.5px; color:var(--soft);
+            font-variant-numeric:tabular-nums;}
 
-  .entry { background:var(--panel); border:1px solid var(--border);
-           border-radius:14px; padding:14px 18px; margin-bottom:11px; }
-  .entry .meta { display:flex; align-items:center; gap:12px; font-size:12.5px;
-                 color:var(--soft); opacity:.9; margin-bottom:6px; }
-  .entry .meta button { margin-left:auto; background:var(--panel-2);
-                        border:1px solid var(--border); color:var(--soft);
-                        border-radius:8px; padding:3px 10px; font-size:12px;
-                        cursor:pointer; }
-  .entry .meta button:hover { color:var(--text); border-color:var(--accent); }
-  .entry p { margin:0; white-space:pre-wrap; }
-  mark { background:rgba(124,196,255,.28); color:var(--text); border-radius:3px; }
+/* ── tables ─────────────────────────────────────────────────── */
+table{width:100%; border-collapse:collapse;}
+th,td{text-align:left; padding:9px 10px; font-size:13.5px;
+      border-bottom:1px solid var(--border);}
+th{color:var(--soft); font-weight:600; font-size:11.5px;
+   text-transform:uppercase; letter-spacing:.07em;}
+th:first-child,td:first-child{padding-left:0;}
+th:last-child,td:last-child{padding-right:0;}
+tr:last-child td{border-bottom:0;}
+td.n{font-family:var(--mono); font-variant-numeric:tabular-nums;}
+td.thin{color:var(--soft);}
 
-  label.field { display:block; margin-bottom:20px; }
-  label.field .lab { font-weight:600; margin-bottom:4px; display:block; }
-  label.field .hint { font-size:13px; color:var(--soft); opacity:.85;
-                      margin-bottom:8px; display:block; }
-  input[type=text], textarea, select {
-    width:100%; padding:10px 12px; border-radius:10px; background:var(--panel-2);
-    border:1px solid var(--border); color:var(--text); font-size:14px;
-    font-family:inherit; }
-  textarea { min-height:80px; resize:vertical; }
-  .row { display:flex; align-items:center; gap:10px; }
-  .btn { background:var(--accent); color:#04121e; border:0; border-radius:10px;
-         padding:10px 18px; font-size:14px; font-weight:600; cursor:pointer; }
-  .saved { color:var(--good); font-size:13.5px; }
-  .empty { color:var(--soft); opacity:.85; padding:24px 0; }
+/* ── controls ───────────────────────────────────────────────── */
+input[type=text],input[type=number],input[type=search],textarea,select{
+  width:100%; padding:9px 11px; border-radius:10px; background:var(--panel-2);
+  border:1px solid var(--border-2); color:var(--text); font-size:14px;
+  font-family:inherit; transition:border-color .15s ease, box-shadow .15s ease;
+}
+input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent);
+  box-shadow:0 0 0 3px var(--accent-dim);}
+input::placeholder,textarea::placeholder{color:var(--soft); opacity:.62;}
+textarea{min-height:78px; resize:vertical; line-height:1.55;}
+select{appearance:none; padding-right:30px;
+  background-image:linear-gradient(45deg,transparent 50%,#e8edf4 50%),
+                   linear-gradient(135deg,#e8edf4 50%,transparent 50%);
+  background-position:calc(100% - 16px) 18px, calc(100% - 11px) 18px;
+  background-size:5px 5px,5px 5px; background-repeat:no-repeat;}
+.btn{background:var(--accent); color:#04121e; border:0; border-radius:10px;
+     padding:9px 17px; font-size:13.5px; font-weight:650; cursor:pointer;
+     font-family:inherit; transition:filter .15s ease, transform .1s ease;}
+.btn:hover{filter:brightness(1.08);}
+.btn:active{transform:translateY(1px);}
+.btn.ghost{background:var(--panel-2); color:var(--text);
+           border:1px solid var(--border-2);}
+.btn.ghost:hover{border-color:var(--accent); filter:none;}
+.btn.tiny{padding:4px 10px; font-size:12px; border-radius:8px; font-weight:600;}
+.btn.danger:hover{border-color:var(--bad); color:var(--bad);}
+.btn:disabled{opacity:.55; cursor:default;}
+.toolbar{display:flex; gap:9px; flex-wrap:wrap; align-items:center;}
+
+.field{margin:0 0 20px;}
+.field:last-child{margin-bottom:0;}
+.field .lab{display:block; font-weight:600; font-size:14px; margin-bottom:3px;}
+.field .hint{display:block; font-size:12.5px; color:var(--soft); margin-bottom:8px;
+             max-width:78ch;}
+.field .ctl{max-width:440px;}
+
+/* switch */
+.switch{display:flex; gap:13px; align-items:flex-start; cursor:pointer;
+        padding:11px 0; border-bottom:1px solid var(--border);}
+.switch:last-child{border-bottom:0; padding-bottom:2px;}
+.switch input{position:absolute; opacity:0; width:0; height:0;}
+.knob{position:relative; flex:none; width:40px; height:23px; border-radius:99px;
+       background:var(--panel-3); border:1px solid var(--border-2); margin-top:2px;
+       transition:background .18s ease, border-color .18s ease;}
+.knob::after{content:""; position:absolute; top:2px; left:2px; width:17px; height:17px;
+              border-radius:50%; background:#f2f6fb; transition:transform .18s ease;}
+.switch input:checked + .knob{background:var(--accent); border-color:var(--accent);}
+.switch input:checked + .knob::after{transform:translateX(17px);}
+.switch input:focus-visible + .knob{box-shadow:0 0 0 3px var(--accent-dim);}
+.switch .txt{min-width:0;}
+.switch .txt b{display:block; font-weight:600; font-size:14px;}
+.switch .txt span{display:block; font-size:12.5px; color:var(--soft);}
+
+/* segmented */
+.seg{display:inline-flex; background:var(--panel-2); border:1px solid var(--border-2);
+     border-radius:11px; padding:3px; gap:3px; flex-wrap:wrap;}
+.seg button{background:none; border:0; color:var(--soft); font:inherit; font-size:13.5px;
+            padding:6px 15px; border-radius:8px; cursor:pointer;
+            transition:background .15s ease, color .15s ease;}
+.seg button:hover{color:var(--text);}
+.seg button.sel{background:var(--accent); color:#04121e; font-weight:650;}
+
+/* ── history ────────────────────────────────────────────────── */
+.searchbar{position:relative; flex:1 1 320px; min-width:220px;}
+.searchbar input{padding-left:34px;}
+.searchbar .mag{position:absolute; left:12px; top:50%; transform:translateY(-50%);
+                color:var(--soft); font-size:13px; pointer-events:none;}
+.daygroup{margin-top:26px;}
+.dayhead{font-size:12.5px; font-weight:650; color:var(--soft); letter-spacing:.04em;
+         text-transform:uppercase; margin:0 0 10px; display:flex; gap:10px;
+         align-items:center;}
+.dayhead::after{content:""; flex:1; height:1px; background:var(--border);}
+.entry{background:var(--panel); border:1px solid var(--border);
+       border-radius:var(--radius); padding:13px 17px; margin-bottom:10px;
+       transition:border-color .15s ease;}
+.entry:hover{border-color:var(--border-2);}
+.entry.pinned{border-color:rgba(124,196,255,.4);}
+.entry.rej{background:rgba(255,139,130,.05); border-color:rgba(255,139,130,.28);}
+.entry .meta{display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+             font-size:12.5px; color:var(--soft); margin-bottom:6px;}
+.entry .meta .time{font-family:var(--mono); font-size:12px;}
+.entry .meta .app{max-width:280px; overflow:hidden; text-overflow:ellipsis;
+                  white-space:nowrap;}
+.entry .acts{margin-left:auto; display:flex; gap:6px; opacity:0;
+             transition:opacity .15s ease;}
+.entry:hover .acts,.entry:focus-within .acts{opacity:1;}
+@media (hover:none){.entry .acts{opacity:1;}}
+.entry .body{margin:0; white-space:pre-wrap; overflow-wrap:anywhere;}
+.entry .body.rejtext{color:var(--soft);}
+.entry textarea{margin-top:4px;}
+.badge{font-size:11px; padding:2px 8px; border-radius:99px; background:var(--panel-3);
+       border:1px solid var(--border-2); color:var(--soft); white-space:nowrap;}
+.badge.acc{border-color:rgba(124,196,255,.45); color:var(--accent);
+           background:var(--accent-dim);}
+.badge.bad{border-color:rgba(255,139,130,.45); color:var(--bad);
+           background:rgba(255,139,130,.1);}
+mark{background:rgba(124,196,255,.3); color:var(--text); border-radius:3px; padding:0 1px;}
+.empty{color:var(--soft); padding:26px 0; font-size:14px;}
+
+/* ── dictionary rows ────────────────────────────────────────── */
+.pairs{display:flex; flex-direction:column; gap:8px;}
+.pair{display:grid; grid-template-columns:1fr 1fr auto; gap:9px; align-items:start;}
+.pair .arrow{display:none;}
+@media (max-width:640px){.pair{grid-template-columns:1fr auto;}}
+.pairhead{display:grid; grid-template-columns:1fr 1fr auto; gap:9px;
+          font-size:11.5px; text-transform:uppercase; letter-spacing:.07em;
+          color:var(--soft); margin-bottom:2px;}
+.pairhead span:last-child{width:34px;}
+.x{background:var(--panel-2); border:1px solid var(--border-2); color:var(--soft);
+   width:34px; height:36px; border-radius:9px; cursor:pointer; font-size:15px;
+   line-height:1; font-family:inherit;}
+.x:hover{color:var(--bad); border-color:var(--bad);}
+
+/* ── save bar & toast ───────────────────────────────────────── */
+.savebar{position:sticky; bottom:0; margin-top:26px; padding:14px 0 18px;
+         background:linear-gradient(180deg,rgba(10,12,16,0),var(--bg) 34%);
+         display:flex; gap:13px; align-items:center; flex-wrap:wrap;}
+.status-msg{font-size:13.5px;}
+.status-msg.ok{color:var(--good);}
+.status-msg.err{color:var(--bad);}
+.status-msg.busy{color:var(--soft);}
+#toast{position:fixed; left:50%; bottom:26px; transform:translate(-50%,14px);
+       background:var(--panel-3); border:1px solid var(--border-2); color:var(--text);
+       padding:11px 16px; border-radius:12px; display:flex; gap:14px; align-items:center;
+       font-size:13.5px; box-shadow:0 12px 34px rgba(0,0,0,.55); opacity:0;
+       pointer-events:none; transition:opacity .2s ease, transform .2s ease; z-index:50;}
+#toast.show{opacity:1; transform:translate(-50%,0); pointer-events:auto;}
+.spacer{flex:1;}
 </style>
 </head>
 <body>
 
 <header>
-  <div class="brand">Dicta<span>Flow</span></div>
-  <div class="pill"><span class="dot" id="dot"></span><span id="status">checking…</span></div>
+  <div class="head-in">
+    <div class="brand">Dicta<span>Flow</span></div>
+    <div class="pill"><span class="dot" id="dot"></span><span id="statustext">checking…</span></div>
+  </div>
+  <nav>
+    <a href="#stats"      data-tab="stats">Overview</a>
+    <a href="#history"    data-tab="history">History</a>
+    <a href="#dictionary" data-tab="dictionary">Dictionary</a>
+    <a href="#settings"   data-tab="settings">Settings</a>
+  </nav>
 </header>
 
-<nav>
-  <button data-tab="stats" class="sel">Overview</button>
-  <button data-tab="history">History</button>
-  <button data-tab="settings">Settings</button>
-</nav>
-
 <div class="wrap">
-  <section id="stats"></section>
-  <section id="history" hidden></section>
-  <section id="settings" hidden></section>
+  <section id="panel-stats"></section>
+  <section id="panel-history" hidden></section>
+  <section id="panel-dictionary" hidden></section>
+  <section id="panel-settings" hidden></section>
 </div>
 
+<div id="toast"></div>
+
 <script>
-const $ = s => document.querySelector(s);
+"use strict";
+
+/* The server substitutes this literal before serving the page. Every mutating
+   request must carry it, or a page on any other origin could drive this UI. */
+const TOKEN = "__CSRF_TOKEN__";
+
+const TABS = ["stats", "history", "dictionary", "settings"];
+const KEY_NAMES = ["alt_r","alt_l","cmd_r","cmd_l","ctrl_r","ctrl_l",
+                   "shift_r","shift_l","f13","f14","f15","f16","f17","f18","f19"];
+const KEY_LABELS = {alt_r:"right ⌥ option", alt_l:"left ⌥ option",
+  cmd_r:"right ⌘ command", cmd_l:"left ⌘ command",
+  ctrl_r:"right ⌃ control", ctrl_l:"left ⌃ control",
+  shift_r:"right ⇧ shift", shift_l:"left ⇧ shift"};
+const LANGS = [["en","English"],["es","Spanish"],["fr","French"],["de","German"],
+  ["it","Italian"],["pt","Portuguese"],["nl","Dutch"],["sv","Swedish"],
+  ["pl","Polish"],["ru","Russian"],["uk","Ukrainian"],["tr","Turkish"],
+  ["ar","Arabic"],["hi","Hindi"],["ja","Japanese"],["ko","Korean"],["zh","Chinese"]];
+
+/* ════════════════════════════════════════════════════════════
+   DOM helper. Everything user-derived goes in as `text`, which
+   becomes a text node — there is no innerHTML path in this file.
+   ════════════════════════════════════════════════════════════ */
+function h(tag, props, kids) {
+  const n = document.createElement(tag);
+  if (props) for (const k of Object.keys(props)) {
+    const v = props[k];
+    if (v === null || v === undefined || v === false) continue;
+    if (k === "class") n.className = v;
+    else if (k === "text") n.textContent = String(v);
+    else if (k === "for") n.htmlFor = v;
+    else if (k.slice(0, 2) === "on") n.addEventListener(k.slice(2), v);
+    else if (k === "style") n.setAttribute("style", v);
+    else if (k in n) { try { n[k] = v; } catch (e) { n.setAttribute(k, v); } }
+    else n.setAttribute(k, v);
+  }
+  if (kids !== null && kids !== undefined) {
+    for (const c of (Array.isArray(kids) ? kids : [kids])) {
+      if (c === null || c === undefined || c === false) continue;
+      n.appendChild(typeof c === "object" ? c : document.createTextNode(String(c)));
+    }
+  }
+  return n;
+}
+const $ = (s) => document.querySelector(s);
+function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+
+/* ════════════════════════════════════════════════════════════
+   API
+   ════════════════════════════════════════════════════════════ */
+async function apiGet(path) {
+  const r = await fetch(path, {headers: {"Accept": "application/json"}});
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+async function apiPost(path, body) {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: {"Content-Type": "application/json", "X-DictaFlow-Token": TOKEN},
+    body: JSON.stringify(body || {}),
+  });
+  let data = null;
+  try { data = await r.json(); } catch (e) { data = null; }
+  if (r.status === 403) {
+    throw new Error("Rejected by the server (403). The dashboard was probably "
+                    + "restarted since this page loaded — reload it.");
+  }
+  if (!r.ok) throw new Error((data && data.error) || ("HTTP " + r.status));
+  return data || {};
+}
+
+/* ════════════════════════════════════════════════════════════
+   Formatting
+   ════════════════════════════════════════════════════════════ */
+const WORD_RE = /[\p{L}\p{N}_]+/gu;
+function wordCount(text) {
+  if (!text) return 0;
+  const m = String(text).match(WORD_RE);
+  if (m) return m.length;
+  return String(text).trim() ? 1 : 0;
+}
+function nfmt(n) {
+  if (n === null || n === undefined) return "—";
+  return Number(n).toLocaleString();
+}
+function plural(n, one, many) { return n === 1 ? one : (many || one + "s"); }
+function parseTs(ts) {
+  if (!ts) return null;
+  const d = new Date(ts);
+  return isNaN(d.getTime()) ? null : d;
+}
+function timeOf(ts) {
+  const d = parseTs(ts);
+  return d ? d.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"}) : "";
+}
+function dayKeyOf(ts) { return (ts || "").slice(0, 10); }
+function todayKey() {
+  const d = new Date();
+  const p = (x) => String(x).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+}
+function dayLabel(key) {
+  const today = todayKey();
+  if (key === today) return "Today";
+  const y = new Date(); y.setDate(y.getDate() - 1);
+  const p = (x) => String(x).padStart(2, "0");
+  const yk = y.getFullYear() + "-" + p(y.getMonth() + 1) + "-" + p(y.getDate());
+  if (key === yk) return "Yesterday";
+  const d = new Date(key + "T12:00:00");
+  if (isNaN(d.getTime())) return key;
+  return d.toLocaleDateString(undefined,
+    {weekday: "long", day: "numeric", month: "long"});
+}
+function shortDay(key) {
+  const d = new Date(key + "T12:00:00");
+  if (isNaN(d.getTime())) return key;
+  return d.toLocaleDateString(undefined, {day: "numeric", month: "short"});
+}
+function secs(v) {
+  if (v === null || v === undefined || v === "") return "—";
+  return Number(v).toFixed(2) + "s";
+}
+function minsLabel(sec) {
+  const m = Math.round(sec / 60);
+  return m + " " + plural(m, "minute");
+}
+
+/* Highlight matches by slicing the RAW string on match indices and appending
+   text nodes + <mark>. Escaping then regex-replacing would either corrupt
+   `&`/`<`/quotes or, done the other way round, inject markup. */
+function appendHighlighted(parent, str, query) {
+  str = String(str === null || str === undefined ? "" : str);
+  const q = (query || "").trim();
+  if (!q) { parent.appendChild(document.createTextNode(str)); return; }
+  const hay = str.toLowerCase(), needle = q.toLowerCase();
+  // Case folding can change length for a few code points (e.g. "İ"),
+  // which would misalign every index after it. Bail out to plain text.
+  if (hay.length !== str.length || !needle.length) {
+    parent.appendChild(document.createTextNode(str));
+    return;
+  }
+  let i = 0, at;
+  while ((at = hay.indexOf(needle, i)) !== -1) {
+    if (at > i) parent.appendChild(document.createTextNode(str.slice(i, at)));
+    parent.appendChild(h("mark", {text: str.slice(at, at + needle.length)}));
+    i = at + needle.length;
+  }
+  parent.appendChild(document.createTextNode(str.slice(i)));
+  return;
+}
+
+/* ════════════════════════════════════════════════════════════
+   State
+   ════════════════════════════════════════════════════════════ */
 let DATA = null;
+let tab = "stats";
+let query = "";            // live search text
+let showDiscarded = false;
+let editingId = null;      // an open inline editor suppresses list re-renders
+let builtSettings = false;
+let builtDict = false;
+let pendingSettings = {};  // settings tab working copy
+let pendingDict = null;    // dictionary tab working copy {dictionary, snippets}
+let toastTimer = null;
 
-/* ---------- tabs ---------- */
-const TABS = ['stats','history','settings'];
+function toast(msg, actionLabel, action) {
+  const t = $("#toast");
+  clear(t);
+  t.appendChild(document.createTextNode(msg));
+  if (actionLabel) {
+    t.appendChild(h("button", {
+      class: "btn tiny", text: actionLabel,
+      onclick: () => { hideToast(); action(); },
+    }));
+  }
+  t.classList.add("show");
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideToast, actionLabel ? 9000 : 3200);
+}
+function hideToast() { $("#toast").classList.remove("show"); }
+
+/* ════════════════════════════════════════════════════════════
+   Routing
+   ════════════════════════════════════════════════════════════ */
+function readHash() {
+  const want = (location.hash || "").replace(/^#/, "");
+  return TABS.indexOf(want) === -1 ? "stats" : want;
+}
 function showTab(name) {
-  if (!TABS.includes(name)) name = 'stats';
-  document.querySelectorAll('nav button')
-    .forEach(x => x.classList.toggle('sel', x.dataset.tab === name));
-  TABS.forEach(t => $('#' + t).hidden = (t !== name));
+  tab = name;
+  for (const t of TABS) $("#panel-" + t).hidden = (t !== name);
+  for (const a of document.querySelectorAll("nav a")) {
+    a.classList.toggle("sel", a.dataset.tab === name);
+  }
+  if (DATA) renderTab(name);
+  window.scrollTo(0, 0);
 }
-// Driven off the hash so a tab is linkable and survives a reload.
-document.querySelectorAll('nav button')
-  .forEach(b => b.onclick = () => { location.hash = b.dataset.tab; });
-addEventListener('hashchange', () => showTab(location.hash.slice(1)));
-showTab(location.hash.slice(1));
+window.addEventListener("hashchange", () => showTab(readHash()));
 
-const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const plural = (n, w) => `${n.toLocaleString()} ${w}${n === 1 ? '' : 's'}`;
-
-function hours(min) {
-  if (min < 60) return min + ' min';
-  return (min / 60).toFixed(1) + ' hrs';
+/* ════════════════════════════════════════════════════════════
+   Load & poll
+   ════════════════════════════════════════════════════════════ */
+async function load(force) {
+  try {
+    const data = await apiGet("/api/data?limit=300");
+    DATA = data;
+    renderStatus();
+    renderTab(tab);
+    if (force) { builtSettings = false; builtDict = false; renderTab(tab); }
+  } catch (err) {
+    $("#statustext").textContent = "dashboard unreachable";
+    $("#dot").classList.remove("on");
+    if (!DATA) {
+      const s = $("#panel-stats");
+      clear(s);
+      s.appendChild(banner("bad", "⚠", "Could not reach the dashboard server",
+        String(err && err.message ? err.message : err)));
+    }
+  }
 }
-
-/* ---------- overview ---------- */
-function renderStats(s) {
-  const lat = Object.entries(s.latency || {})
-    .map(([m, v]) => `<tr><td>${esc(m)}</td><td>${v.median}s</td><td>${v.p90}s</td><td>${v.n}</td></tr>`)
-    .join('');
-
-  const max = Math.max(1, ...s.daily.map(d => d.words));
-  const bars = s.daily.map(d =>
-    `<div class="bar" style="height:${Math.max(2, d.words / max * 100)}%"
-          title="${d.day} — ${plural(d.words, 'word')}"></div>`).join('');
-
-  $('#stats').innerHTML = `
-    <div class="grid">
-      <div class="card"><div class="k">Words dictated</div>
-        <div class="v">${s.total_words.toLocaleString()}</div>
-        <div class="s">${plural(s.count, 'dictation')}</div></div>
-      <div class="card"><div class="k">Time saved</div>
-        <div class="v">${hours(s.saved_min)}</div>
-        <div class="s">vs typing at 40 wpm</div></div>
-      <div class="card"><div class="k">Streak</div>
-        <div class="v">${s.streak}</div>
-        <div class="s">${plural(s.days, 'active day')} total</div></div>
-      <div class="card"><div class="k">This week</div>
-        <div class="v">${s.week_words.toLocaleString()}</div>
-        <div class="s">words in last 7 days</div></div>
-      <div class="card"><div class="k">Speaking pace</div>
-        <div class="v">${s.wpm ?? '—'}</div>
-        <div class="s">${s.wpm ? 'words per minute' : 'needs new dictations'}</div></div>
-      <div class="card"><div class="k">Rejected</div>
-        <div class="v">${s.reject_pct ?? '—'}${s.reject_pct != null ? '%' : ''}</div>
-        <div class="s">${s.attempts ? s.rejected + ' of ' + s.attempts + ' attempts' : 'no data yet'}</div></div>
-    </div>
-
-    <h2>Words per day · last 30 days</h2>
-    <div class="chart">${bars}</div>
-
-    <h2>Transcription latency</h2>
-    ${lat ? `<table><tr><th>Model</th><th>Median</th><th>p90</th><th>Runs</th></tr>${lat}</table>`
-          : `<div class="empty">No timing data yet — dictate something and it'll show up here.</div>`}
-  `;
+function renderTab(name) {
+  if (name === "stats") renderStats();
+  else if (name === "history") renderHistory();
+  else if (name === "dictionary") renderDictionary();
+  else if (name === "settings") renderSettings();
 }
 
-/* ---------- history ---------- */
-function renderHistory(entries, q = '') {
-  const needle = q.trim().toLowerCase();
-  const hits = needle ? entries.filter(e => e.text.toLowerCase().includes(needle)) : entries;
-  const body = hits.length ? hits.map((e, i) => {
-    let text = esc(e.text);
-    if (needle) text = text.replace(new RegExp(`(${needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'), '<mark>$1</mark>');
-    return `<div class="entry">
-        <div class="meta"><span>${esc(e.ts)}</span><span>${plural(e.words, 'word')}</span>
-          <button data-copy="${i}">Copy</button></div>
-        <p>${text}</p></div>`;
-  }).join('') : `<div class="empty">Nothing matches “${esc(q)}”.</div>`;
-
-  $('#history').innerHTML =
-    `<input id="search" placeholder="Search your transcripts…" value="${esc(q)}">` + body;
-
-  const box = $('#search');
-  box.oninput = () => { const v = box.value; renderHistory(entries, v);
-                        const b = $('#search'); b.focus(); b.setSelectionRange(v.length, v.length); };
-  $('#history').querySelectorAll('[data-copy]').forEach(b =>
-    b.onclick = () => { navigator.clipboard.writeText(hits[+b.dataset.copy].text);
-                        b.textContent = 'Copied'; setTimeout(() => b.textContent = 'Copy', 1200); });
+function renderStatus() {
+  const running = !!DATA.running;
+  $("#dot").classList.toggle("on", running);
+  const last = DATA.stats && DATA.stats.last ? parseTs(DATA.stats.last) : null;
+  let txt = running ? "agent running" : "agent stopped";
+  if (running && last) {
+    txt += " · last " + last.toLocaleDateString(undefined, {month: "short", day: "numeric"})
+         + " " + timeOf(DATA.stats.last);
+  }
+  $("#statustext").textContent = txt;
 }
 
-/* ---------- settings ---------- */
-function renderSettings(cfg) {
-  $('#settings').innerHTML = `
-    <label class="field">
-      <span class="lab">Language</span>
-      <span class="hint">Pinning the language skips Whisper's language-detection pass —
-        a whole extra encoder run. Measured 1.9s → 1.0s on Turbo. Only set this to
-        auto-detect if you actually dictate in more than one language.</span>
-      <select id="language">
-        <option value="en">English (fastest)</option>
-        <option value="">Auto-detect (slower)</option>
-      </select>
-    </label>
+function banner(kind, icon, title, body, extra) {
+  return h("div", {class: "banner " + kind}, [
+    h("div", {class: "icon", text: icon}),
+    h("div", {class: "body"}, [
+      h("h3", {text: title}),
+      body ? h("p", {text: body}) : null,
+      extra || null,
+    ]),
+  ]);
+}
 
-    <label class="field">
-      <span class="lab">Vocabulary hint</span>
-      <span class="hint">Seeded into the decoder as if it were preceding text, which
-        biases it toward names and jargon it would otherwise spell phonetically.
-        Keep it short — long hints can bleed into your transcripts.</span>
-      <textarea id="initial_prompt" placeholder="e.g. Names, acronyms and technical terms you use often."></textarea>
-    </label>
+/* ════════════════════════════════════════════════════════════
+   1 — Overview
+   ════════════════════════════════════════════════════════════ */
+function renderStats() {
+  const root = $("#panel-stats");
+  const s = DATA.stats || {};
+  clear(root);
 
-    <label class="field">
-      <span class="lab">LLM cleanup</span>
-      <span class="hint">Runs a local Ollama model over each transcript to tidy it.
-        Off by default: it added roughly 40 seconds and changed almost nothing,
-        because Whisper already punctuates well.</span>
-      <span class="row"><input type="checkbox" id="cleanup_enabled" style="width:auto">
-        <span>Enable cleanup pass</span></span>
-    </label>
+  if (DATA.config_error) {
+    root.appendChild(banner("bad", "⚠", "Configuration file could not be read",
+      DATA.config_error,
+      h("p", {text: "Settings cannot be saved until this is fixed — DictaFlow "
+        + "refuses to overwrite a file it could not parse, because the broken "
+        + "copy may be the only one holding your keys. A copy was preserved as "
+        + "~/.dictaflow/config.broken.json."})));
+  }
+  if (!DATA.running) {
+    root.appendChild(banner("warn", "●", "The dictation agent is not running",
+      "Nothing is listening for your hotkeys. Start the LaunchAgent:",
+      h("pre", {class: "cmd",
+        text: "launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.dictaflow.agent.plist"})));
+  }
 
-    <div class="row"><button class="btn" id="save">Save</button>
-      <span class="saved" id="savedmsg"></span></div>
-    <p class="hint" style="margin-top:18px">Changes apply to your next dictation —
-      no restart needed.</p>
-  `;
-  $('#language').value = cfg.language ?? 'en';
-  $('#initial_prompt').value = cfg.initial_prompt ?? '';
-  $('#cleanup_enabled').checked = !!cfg.cleanup_enabled;
+  /* ── stat cards ── */
+  const savedBasis = s.saved_basis || 0;
+  const cards = [
+    ["Total words", nfmt(s.total_words),
+     nfmt(s.count) + " " + plural(s.count || 0, "dictation") + " over "
+       + nfmt(s.days) + " " + plural(s.days || 0, "day")],
+    ["Words this week", nfmt(s.week_words), "last 7 days"],
+    /* An em-dash, not "0 min", when nothing has been measured yet. "0 min"
+       claims you saved no time; the truth is that we do not know, because
+       entries imported from the old format carry no audio duration. */
+    ["Time saved", savedBasis ? (s.saved_min || 0) + " min" : "\u2014",
+     savedBasis
+       ? "vs typing at 40 wpm, over " + nfmt(savedBasis) + " measured "
+         + plural(savedBasis, "dictation")
+       : "no dictation has a measured audio length yet"],
+    ["Day streak", nfmt(s.streak),
+     s.streak ? "consecutive days dictating" : "dictate today to start one"],
+    ["Speaking pace", s.wpm ? nfmt(s.wpm) : "—", s.wpm ? "words per minute spoken"
+      : "needs more measured audio"],
+    ["Dictations", nfmt(s.count),
+     s.attempts ? nfmt(s.attempts) + " attempts, " + nfmt(s.rejected) + " discarded"
+                : "no attempts recorded"],
+  ];
+  const grid = h("div", {class: "grid"});
+  for (const [k, v, sub] of cards) {
+    grid.appendChild(h("div", {class: "card stat"}, [
+      h("div", {class: "k", text: k}),
+      h("div", {class: "v", text: v}),
+      h("div", {class: "s", text: sub}),
+    ]));
+  }
+  root.appendChild(h("h2", {text: "At a glance"}));
+  root.appendChild(grid);
+  root.appendChild(h("p", {class: "note",
+    text: "Time saved counts only dictations where the audio length was actually "
+        + "measured (" + nfmt(savedBasis) + " of " + nfmt(s.count || 0) + "), compared "
+        + "against sustained typing at 40 wpm. It is indicative, not a stopwatch."}));
 
-  $('#save').onclick = async () => {
-    const body = {
-      language: $('#language').value || null,
-      initial_prompt: $('#initial_prompt').value,
-      cleanup_enabled: $('#cleanup_enabled').checked,
-    };
-    const r = await fetch('/api/settings', {method: 'POST', body: JSON.stringify(body)});
-    const j = await r.json();
-    $('#savedmsg').textContent = j.ok ? 'Saved ✓' : 'Failed: ' + j.error;
-    setTimeout(() => $('#savedmsg').textContent = '', 2500);
+  /* ── 30-day chart ── */
+  root.appendChild(h("h2", {text: "Last 30 days"}));
+  root.appendChild(chartCard(s.daily || []));
+
+  /* ── latency + accuracy ── */
+  const two = h("div", {class: "grid-2"});
+  two.appendChild(latencyCard(s.latency || {}));
+  two.appendChild(accuracyCard(s));
+  root.appendChild(h("h2", {text: "Engine health"}));
+  root.appendChild(two);
+
+  /* ── top apps ── */
+  root.appendChild(h("h2", {text: "Where the words went"}));
+  root.appendChild(appsCard(s.by_app || []));
+}
+
+function chartCard(daily) {
+  const card = h("div", {class: "card"});
+  const max = daily.reduce((m, d) => Math.max(m, d.words || 0), 0);
+  const chart = h("div", {class: "chart"});
+  for (const d of daily) {
+    const w = d.words || 0;
+    const pct = max > 0 ? Math.max(2, Math.round(w / max * 100)) : 0;
+    const bar = h("div", {class: "bar" + (w ? "" : " zero"),
+                          style: "height:" + (w ? pct : 2) + "%"});
+    chart.appendChild(h("div", {
+      class: "col",
+      title: shortDay(d.day) + " — " + nfmt(w) + " " + plural(w, "word"),
+    }, bar));
+  }
+  card.appendChild(chart);
+  const axis = h("div", {class: "axis"});
+  if (daily.length) {
+    axis.appendChild(h("span", {text: shortDay(daily[0].day)}));
+    axis.appendChild(h("span", {text: shortDay(daily[Math.floor(daily.length / 2)].day)}));
+    axis.appendChild(h("span", {text: "Today"}));
+  }
+  card.appendChild(axis);
+  card.appendChild(h("p", {class: "note",
+    text: "Words per day. Peak " + nfmt(max) + " " + plural(max, "word")
+        + ". Hover a bar for its date and count."}));
+  return card;
+}
+
+function latencyCard(latency) {
+  const card = h("div", {class: "card"});
+  card.appendChild(h("h3", {text: "Latency by model"}));
+  card.appendChild(h("p", {class: "lede",
+    text: "Seconds from releasing the key to text landing in the app."}));
+  const models = Object.keys(latency);
+  if (!models.length) {
+    card.appendChild(h("div", {class: "empty", text: "No timed dictations yet."}));
+    return card;
+  }
+  const t = h("table");
+  t.appendChild(h("thead", null, h("tr", null, [
+    h("th", {text: "Model"}), h("th", {text: "Median"}),
+    h("th", {text: "p90"}), h("th", {text: "Samples"}),
+  ])));
+  const tb = h("tbody");
+  let thin = false;
+  for (const m of models) {
+    const r = latency[m] || {};
+    const small = (r.n || 0) < 10;
+    if (small) thin = true;
+    tb.appendChild(h("tr", null, [
+      h("td", {text: m}),
+      h("td", {class: "n", text: secs(r.median)}),
+      small ? h("td", {class: "thin", text: "n < 10"})
+            : h("td", {class: "n", text: secs(r.p90)}),
+      h("td", {class: "n", text: nfmt(r.n)}),
+    ]));
+  }
+  t.appendChild(tb);
+  card.appendChild(t);
+  if (thin) {
+    card.appendChild(h("p", {class: "note",
+      text: "p90 is hidden below 10 samples: with a handful of runs it is just "
+          + "the slowest one wearing a disguise."}));
+  }
+  return card;
+}
+
+function accuracyCard(s) {
+  const card = h("div", {class: "card"});
+  card.appendChild(h("h3", {text: "Capture accuracy"}));
+  card.appendChild(h("p", {class: "lede",
+    text: "Discarded recordings never became text. A rising rate usually means "
+        + "the speech filter is eating real dictation."}));
+
+  const row = h("div", {class: "grid", style: "grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px"});
+  const pct = (s.reject_pct === null || s.reject_pct === undefined) ? "—" : s.reject_pct + "%";
+  for (const [k, v] of [["Attempts", nfmt(s.attempts)], ["Discarded", nfmt(s.rejected)],
+                        ["Discard rate", pct]]) {
+    row.appendChild(h("div", {class: "stat"}, [
+      h("div", {class: "k", text: k}),
+      h("div", {class: "v", style: "font-size:24px", text: v}),
+    ]));
+  }
+  card.appendChild(row);
+
+  const reasons = s.reject_reasons || [];
+  if (reasons.length) {
+    const max = reasons.reduce((m, r) => Math.max(m, r[1] || 0), 0) || 1;
+    const list = h("div", {class: "blist", style: "margin-top:14px"});
+    for (const [reason, n] of reasons) {
+      list.appendChild(h("div", {class: "row"}, [
+        h("div", {class: "name", title: String(reason), text: String(reason)}),
+        h("div", {class: "track"},
+          h("div", {class: "fill warnfill", style: "width:" + Math.round(n / max * 100) + "%"})),
+        h("div", {class: "val", text: nfmt(n)}),
+      ]));
+    }
+    card.appendChild(list);
+  } else if (s.rejected) {
+    card.appendChild(h("p", {class: "note", text: "No reasons were recorded."}));
+  }
+
+  if (s.failed_paste > 0) {
+    card.appendChild(h("div", {class: "banner bad", style: "margin:14px 0 0"}, [
+      h("div", {class: "icon", text: "⚠"}),
+      h("div", {class: "body"}, [
+        h("h3", {text: nfmt(s.failed_paste) + " " + plural(s.failed_paste, "dictation")
+                       + " never reached the target app"}),
+        h("p", {text: "These were transcribed successfully but the paste failed, so "
+              + "the words exist only in this history. They are recoverable from the "
+              + "History tab."}),
+      ]),
+    ]));
+  } else {
+    card.appendChild(h("p", {class: "note",
+      text: "Every transcribed dictation reached its target app."}));
+  }
+  return card;
+}
+
+function appsCard(byApp) {
+  const card = h("div", {class: "card"});
+  if (!byApp.length) {
+    card.appendChild(h("div", {class: "empty", text: "No app attribution recorded yet."}));
+    return card;
+  }
+  const max = byApp.reduce((m, a) => Math.max(m, a[1] || 0), 0) || 1;
+  const list = h("div", {class: "blist"});
+  for (const [app, words] of byApp) {
+    list.appendChild(h("div", {class: "row"}, [
+      h("div", {class: "name", title: String(app), text: String(app)}),
+      h("div", {class: "track"},
+        h("div", {class: "fill", style: "width:" + Math.round(words / max * 100) + "%"})),
+      h("div", {class: "val", text: nfmt(words)}),
+    ]));
+  }
+  card.appendChild(list);
+  card.appendChild(h("p", {class: "note", text: "Words dictated per application."}));
+  return card;
+}
+
+/* ════════════════════════════════════════════════════════════
+   2 — History
+   The toolbar (and its search field) is built ONCE. Re-rendering
+   it on every keystroke used to move the caret to the end and
+   break IME composition; the 15 s poll used to steal focus.
+   ════════════════════════════════════════════════════════════ */
+let historyShell = null;
+let historyList = null;
+let searchInput = null;
+let searchTimer = null;
+
+function buildHistoryShell() {
+  const root = $("#panel-history");
+  clear(root);
+
+  searchInput = h("input", {
+    type: "search", id: "search", placeholder: "Search transcripts and apps…",
+    autocomplete: "off", spellcheck: false, value: query,
+  });
+  searchInput.addEventListener("input", () => {
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      query = searchInput.value;
+      renderHistoryList();
+    }, 140);
+  });
+
+  const bar = h("div", {class: "toolbar"}, [
+    h("div", {class: "searchbar"}, [
+      h("span", {class: "mag", text: "⌕"}),
+      searchInput,
+    ]),
+    h("div", {class: "spacer"}),
+    h("a", {class: "btn ghost", href: "/api/export?format=md", download: "", text: "Export .md"}),
+    h("a", {class: "btn ghost", href: "/api/export?format=txt", download: "", text: "Export .txt"}),
+    h("a", {class: "btn ghost", href: "/api/export?format=json", download: "", text: "Export .json"}),
+  ]);
+
+  historyList = h("div", {id: "historylist"});
+  root.appendChild(bar);
+  root.appendChild(historyList);
+  historyShell = root;
+}
+
+function renderHistory() {
+  if (!historyShell) buildHistoryShell();
+  renderHistoryList();
+}
+
+function matches(e, q) {
+  if (!q) return true;
+  const needle = q.toLowerCase();
+  return String(e.text || "").toLowerCase().indexOf(needle) !== -1
+      || String(e.app || "").toLowerCase().indexOf(needle) !== -1
+      || String(e.rejected || "").toLowerCase().indexOf(needle) !== -1;
+}
+
+function renderHistoryList() {
+  if (!historyList) return;
+  if (editingId) return;                 // never yank an open editor away
+  const q = query.trim();
+  const all = (DATA.entries || []).filter((e) => !e.deleted)
+    .slice().sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
+  const ok = all.filter((e) => e.outcome !== "rejected");
+  const rejected = all.filter((e) => e.outcome === "rejected");
+
+  const shownOk = ok.filter((e) => matches(e, q));
+  const shownRej = rejected.filter((e) => matches(e, q));
+  const pinned = shownOk.filter((e) => e.pinned);
+  const rest = shownOk.filter((e) => !e.pinned);
+
+  clear(historyList);
+
+  const total = DATA.total || all.length;
+  historyList.appendChild(h("p", {class: "note", style: "margin:12px 2px 0", text:
+    q ? (shownOk.length + " of " + ok.length + " " + plural(ok.length, "dictation")
+         + " match “" + q + "”")
+      : ("Showing the latest " + nfmt(all.length) + " of " + nfmt(total)
+         + " recorded " + plural(total, "entry", "entries") + ".")}));
+
+  if (pinned.length) {
+    const g = h("div", {class: "daygroup"});
+    g.appendChild(h("div", {class: "dayhead", text: "Pinned"}));
+    for (const e of pinned) g.appendChild(entryRow(e, q));
+    historyList.appendChild(g);
+  }
+
+  if (rejected.length) {
+    const toggle = h("button", {
+      class: "btn ghost tiny",
+      text: (showDiscarded ? "Hide" : "Show") + " " + rejected.length + " discarded "
+            + plural(rejected.length, "recording"),
+      onclick: () => { showDiscarded = !showDiscarded; renderHistoryList(); },
+    });
+    historyList.appendChild(h("div", {class: "toolbar", style: "margin-top:18px"},
+      [toggle,
+       h("span", {class: "note", style: "margin:0",
+                  text: "Audio the speech filter rejected before transcription."})]));
+    if (showDiscarded) {
+      const g = h("div", {class: "daygroup"});
+      if (!shownRej.length) {
+        g.appendChild(h("div", {class: "empty", text: "No discarded recordings match."}));
+      }
+      for (const e of shownRej) g.appendChild(entryRow(e, q));
+      historyList.appendChild(g);
+    }
+  }
+
+  if (!rest.length && !pinned.length) {
+    historyList.appendChild(h("div", {class: "empty",
+      text: q ? "Nothing matches that search." : "No dictations recorded yet."}));
+    return;
+  }
+
+  let currentDay = null, group = null;
+  for (const e of rest) {
+    const key = dayKeyOf(e.ts);
+    if (key !== currentDay) {
+      currentDay = key;
+      group = h("div", {class: "daygroup"});
+      group.appendChild(h("div", {class: "dayhead", text: dayLabel(key)}));
+      historyList.appendChild(group);
+    }
+    group.appendChild(entryRow(e, q));
+  }
+}
+
+function entryRow(e, q) {
+  const rej = e.outcome === "rejected";
+  const row = h("div", {
+    class: "entry" + (e.pinned ? " pinned" : "") + (rej ? " rej" : ""),
+  });
+
+  const meta = h("div", {class: "meta"});
+  meta.appendChild(h("span", {class: "time", text: timeOf(e.ts)}));
+  if (e.app) {
+    const appEl = h("span", {class: "app", title: String(e.app)});
+    appendHighlighted(appEl, e.app, q);
+    meta.appendChild(appEl);
+  }
+  if (e.model) meta.appendChild(h("span", {class: "badge acc", text: String(e.model)}));
+  if (rej) meta.appendChild(h("span", {class: "badge bad", text: "discarded"}));
+  if (e.pinned) meta.appendChild(h("span", {class: "badge", text: "★ pinned"}));
+  if (!rej) {
+    const w = wordCount(e.text);
+    meta.appendChild(h("span", {text: w + " " + plural(w, "word")}));
+    if (e.latency) meta.appendChild(h("span", {class: "num", text: secs(e.latency)}));
+    if (e.pasted === false) {
+      meta.appendChild(h("span", {class: "badge bad", title: String(e.paste_detail || ""),
+                                  text: "paste failed"}));
+    }
+  }
+
+  const acts = h("div", {class: "acts"});
+  if (!rej) {
+    acts.appendChild(h("button", {class: "btn ghost tiny", text: "Copy",
+      onclick: () => copyText(e.text)}));
+    acts.appendChild(h("button", {class: "btn ghost tiny",
+      text: e.pinned ? "Unpin" : "Pin",
+      onclick: () => setPinned(e, !e.pinned)}));
+    acts.appendChild(h("button", {class: "btn ghost tiny", text: "Edit",
+      onclick: () => openEditor(row, e, q)}));
+  }
+  acts.appendChild(h("button", {class: "btn ghost tiny danger", text: "Delete",
+    onclick: () => removeEntry(e)}));
+  meta.appendChild(acts);
+  row.appendChild(meta);
+
+  const body = h("p", {class: "body" + (rej ? " rejtext" : "")});
+  if (rej) {
+    const reason = e.rejected ? String(e.rejected) : "no reason recorded";
+    body.appendChild(document.createTextNode("Rejected: "));
+    appendHighlighted(body, reason, q);
+    if (e.audio_secs) {
+      body.appendChild(document.createTextNode(
+        " · " + Number(e.audio_secs).toFixed(1) + "s of audio"));
+    }
+  } else {
+    appendHighlighted(body, e.text || "", q);
+  }
+  row.appendChild(body);
+  return row;
+}
+
+function openEditor(row, e, q) {
+  if (editingId) return;
+  editingId = e.id;
+  const body = row.querySelector(".body");
+  const ta = h("textarea", {value: e.text || "", spellcheck: true});
+  const save = h("button", {class: "btn tiny", text: "Save", onclick: async () => {
+    const text = ta.value;
+    try {
+      await apiPost("/api/entry", {id: e.id, text: text});
+      e.text = text;
+      e.edited = true;
+      close();
+      toast("Saved.");
+    } catch (err) { toast("Could not save: " + err.message); }
+  }});
+  const cancel = h("button", {class: "btn ghost tiny", text: "Cancel", onclick: () => close()});
+  const bar = h("div", {class: "toolbar", style: "margin-top:9px"}, [save, cancel]);
+  function close() {
+    editingId = null;
+    renderHistoryList();
+  }
+  row.replaceChild(ta, body);
+  row.appendChild(bar);
+  ta.style.height = Math.min(400, Math.max(90, ta.scrollHeight + 20)) + "px";
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+  ta.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") { ev.preventDefault(); close(); }
+    if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); save.click(); }
+  });
+  void q;
+}
+
+async function setPinned(e, on) {
+  try {
+    await apiPost("/api/entry", {id: e.id, pinned: on});
+    e.pinned = on;
+    renderHistoryList();
+  } catch (err) { toast("Could not update: " + err.message); }
+}
+
+async function removeEntry(e) {
+  try {
+    await apiPost("/api/entry", {id: e.id, deleted: true});
+    e.deleted = true;
+    renderHistoryList();
+    toast("Deleted.", "Undo", async () => {
+      try {
+        await apiPost("/api/entry", {id: e.id, deleted: false});
+        e.deleted = false;
+        renderHistoryList();
+      } catch (err) { toast("Could not restore: " + err.message); }
+    });
+  } catch (err) { toast("Could not delete: " + err.message); }
+}
+
+async function copyText(text) {
+  const value = String(text || "");
+  try {
+    await navigator.clipboard.writeText(value);
+    toast("Copied to clipboard.");
+  } catch (err) {
+    const ta = h("textarea", {value: value,
+      style: "position:fixed;top:-1000px;left:-1000px;opacity:0"});
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (e2) { ok = false; }
+    document.body.removeChild(ta);
+    toast(ok ? "Copied to clipboard." : "Could not copy — select the text manually.");
+  }
+}
+
+/* ════════════════════════════════════════════════════════════
+   3 — Dictionary & snippets
+   ════════════════════════════════════════════════════════════ */
+function renderDictionary() {
+  if (builtDict) return;
+  builtDict = true;
+  const root = $("#panel-dictionary");
+  clear(root);
+
+  const st = DATA.settings || {};
+  pendingDict = {
+    dictionary: (st.dictionary || []).map((d) => ({from: d.from || "", to: d.to || ""})),
+    snippets: (st.snippets || []).map((s) => ({trigger: s.trigger || "", text: s.text || ""})),
   };
+
+  const msg = h("span", {class: "status-msg"});
+
+  root.appendChild(h("h2", {text: "Vocabulary"}));
+  root.appendChild(h("div", {class: "card"}, [
+    h("h3", {text: "Dictionary"}),
+    h("p", {class: "lede", text: "Fixes words Whisper reliably spells wrong — "
+      + "names, acronyms, jargon. Matching is whole-word and case-insensitive, and "
+      + "the replacement follows the casing of what it replaced."}),
+    pairEditor("dictionary", "from", "to", "Heard as", "Replace with",
+               "sofie", "Sophie"),
+  ]));
+
+  root.appendChild(h("h2", {text: "Snippets"}));
+  root.appendChild(h("div", {class: "card"}, [
+    h("h3", {text: "Snippets"}),
+    h("p", {class: "lede", text: "Expands a short spoken phrase into boilerplate — "
+      + "say the trigger, get the whole block of text."}),
+    pairEditor("snippets", "trigger", "text", "When I say", "Insert this",
+               "my address", "221B Baker Street\nLondon"),
+  ]));
+
+  const saveBtn = h("button", {class: "btn", text: "Save vocabulary", onclick: async () => {
+    const dictionary = pendingDict.dictionary
+      .filter((d) => d.from.trim())
+      .map((d) => ({from: d.from, to: d.to}));
+    const snippets = pendingDict.snippets
+      .filter((s) => s.trigger.trim())
+      .map((s) => ({trigger: s.trigger, text: s.text}));
+    await saveSettings({dictionary: dictionary, snippets: snippets}, msg, saveBtn);
+  }});
+
+  root.appendChild(h("div", {class: "savebar"}, [
+    saveBtn, msg,
+    h("span", {class: "note", style: "margin:0",
+      text: "Blank rows are dropped on save. Changes take effect on your next dictation."}),
+  ]));
 }
 
-/* ---------- load ---------- */
-async function load() {
-  const r = await fetch('/api/data');
-  DATA = await r.json();
-  $('#dot').classList.toggle('on', DATA.running);
-  $('#status').textContent = DATA.running ? 'Listening' : 'Agent not running';
-  renderStats(DATA.stats);
-  const q = $('#search') ? $('#search').value : '';
-  if (!q) renderHistory(DATA.entries);
-  if (!$('#save')) renderSettings(DATA.settings);
+function pairEditor(which, keyA, keyB, labelA, labelB, phA, phB) {
+  const wrap = h("div");
+  const head = h("div", {class: "pairhead"}, [
+    h("span", {text: labelA}), h("span", {text: labelB}), h("span"),
+  ]);
+  const rows = h("div", {class: "pairs"});
+  const empty = h("div", {class: "empty", text: "Nothing here yet."});
+
+  function draw() {
+    clear(rows);
+    const list = pendingDict[which];
+    if (!list.length) { rows.appendChild(empty); return; }
+    list.forEach((item, i) => {
+      const a = h("input", {type: "text", value: item[keyA], placeholder: phA});
+      a.addEventListener("input", () => { item[keyA] = a.value; });
+      const bIsLong = which === "snippets";
+      const b = bIsLong
+        ? h("textarea", {value: item[keyB], placeholder: phB, style: "min-height:44px"})
+        : h("input", {type: "text", value: item[keyB], placeholder: phB});
+      b.addEventListener("input", () => { item[keyB] = b.value; });
+      const del = h("button", {class: "x", title: "Remove this row", text: "×",
+        onclick: () => { list.splice(i, 1); draw(); }});
+      rows.appendChild(h("div", {class: "pair"}, [a, b, del]));
+    });
+  }
+  draw();
+
+  wrap.appendChild(head);
+  wrap.appendChild(rows);
+  wrap.appendChild(h("div", {class: "toolbar", style: "margin-top:11px"},
+    h("button", {class: "btn ghost tiny", text: "+ Add row", onclick: () => {
+      const blank = {};
+      blank[keyA] = ""; blank[keyB] = "";
+      pendingDict[which].push(blank);
+      draw();
+    }})));
+  return wrap;
 }
-load();
-setInterval(load, 15000);
+
+/* ════════════════════════════════════════════════════════════
+   4 — Settings
+   Every key in config.EDITABLE is reachable from here.
+   ════════════════════════════════════════════════════════════ */
+const CLEANUP_DESC = {
+  none: "Leaves your words as spoken. Dictionary, snippets, spoken punctuation "
+      + "and list formatting still run — only filler removal and backtracking stop.",
+  light: "Removes hesitations only: um, uh, er, erm, hm, mm — along with the "
+       + "commas that were bracketing them.",
+  medium: "Light, plus discourse fillers set off by commas (“you know”, "
+        + "“I mean”, “like”), the hedges “sort of” and "
+        + "“kind of”, and “basically” / “literally” anywhere.",
+  high: "Medium, plus sentence openers (“so”, “well”, "
+      + "“right”, “okay”, “alright”) and tag questions "
+      + "(“…, you know?” becomes a statement). The most aggressive — "
+      + "it can drop a word you meant.",
+};
+
+function renderSettings() {
+  if (builtSettings) return;
+  builtSettings = true;
+  const root = $("#panel-settings");
+  clear(root);
+  const st = DATA.settings || {};
+  pendingSettings = {};
+
+  const get = (k, dflt) => (k in pendingSettings ? pendingSettings[k]
+                          : (st[k] === undefined ? dflt : st[k]));
+  const set = (k, v) => { pendingSettings[k] = v; };
+
+  if (DATA.config_error) {
+    root.appendChild(banner("bad", "⚠", "Settings are read-only right now",
+      DATA.config_error + " — saving is refused until the file is fixed or "
+      + "deleted, so an unreadable config is never overwritten with defaults."));
+  }
+
+  const msg = h("span", {class: "status-msg"});
+
+  /* ── Engine ───────────────────────────────────────────────── */
+  const engine = card("Engine", "What the recogniser is told before it starts listening.");
+  engine.appendChild(field("Language",
+    "Pinning the language skips Whisper's detection pass, which costs about 0.9 s "
+    + "on every dictation. Choose auto-detect only if you really switch languages.",
+    (() => {
+      const sel = h("select");
+      sel.appendChild(h("option", {value: "__auto__", text: "Auto-detect (slower)"}));
+      for (const [code, name] of LANGS) {
+        sel.appendChild(h("option", {value: code, text: name + " (" + code + ")"}));
+      }
+      const cur = get("language", "en");
+      sel.value = (cur === null || cur === undefined) ? "__auto__" : String(cur);
+      if (sel.selectedIndex === -1) {            // a code not in our short list
+        sel.appendChild(h("option", {value: String(cur), text: String(cur)}));
+        sel.value = String(cur);
+      }
+      sel.addEventListener("change", () => {
+        set("language", sel.value === "__auto__" ? null : sel.value);
+      });
+      return sel;
+    })()));
+
+  engine.appendChild(field("Languages offered in the bar",
+    "Comma-separated codes shown in the dictation bar's language picker.",
+    (() => {
+      const inp = h("input", {type: "text", placeholder: "en, fr",
+        value: (get("languages", ["en"]) || []).join(", ")});
+      inp.addEventListener("input", () => {
+        set("languages", inp.value.split(",").map((s) => s.trim()).filter(Boolean));
+      });
+      return inp;
+    })()));
+
+  engine.appendChild(field("Vocabulary hint (initial prompt)",
+    "A short list of names, acronyms and jargon you use often. Whisper reads it as "
+    + "context before decoding, which biases spelling towards your words. Keep it "
+    + "under a couple of lines — a long prompt slows decoding and can leak "
+    + "phrases into the transcript.",
+    (() => {
+      const ta = h("textarea", {value: get("initial_prompt", ""),
+        placeholder: "Sophie, DictaFlow, MLX, Whisper, launchd"});
+      ta.addEventListener("input", () => set("initial_prompt", ta.value));
+      return ta;
+    })(), true));
+
+  engine.appendChild(switchRow("Streaming transcription",
+    "Transcribe finished phrases while you are still speaking, so only the tail is "
+    + "left when you release the key. Turning this off is slower on anything but "
+    + "very short utterances.",
+    get("streaming", true), (v) => set("streaming", v)));
+  root.appendChild(h("h2", {text: "Engine"}));
+  root.appendChild(engine);
+
+  /* ── Formatting ───────────────────────────────────────────── */
+  const fmt = card("Formatting", "How spoken language becomes written language.");
+  const desc = h("p", {class: "hint", style: "margin:9px 0 0",
+    text: CLEANUP_DESC[get("cleanup_level", "medium")] || ""});
+  fmt.appendChild(field("Cleanup level",
+    "How much of the mess of speech is removed before the text is pasted.",
+    (() => {
+      const seg = h("div", {class: "seg"});
+      const cur = {v: get("cleanup_level", "medium")};
+      for (const [val, label] of [["none", "None"], ["light", "Light"],
+                                  ["medium", "Medium"], ["high", "High"]]) {
+        const b = h("button", {type: "button", text: label,
+          class: cur.v === val ? "sel" : "", onclick: () => {
+            cur.v = val;
+            set("cleanup_level", val);
+            for (const btn of seg.children) btn.classList.remove("sel");
+            b.classList.add("sel");
+            desc.textContent = CLEANUP_DESC[val];
+          }});
+        seg.appendChild(b);
+      }
+      const box = h("div", null, [seg, desc]);
+      return box;
+    })(), true));
+
+  const toggles = [
+    ["spoken_punctuation", true, "Spoken punctuation",
+     "Turns “period”, “comma”, “new line” and friends into "
+     + "the actual marks — but only where the word cannot be part of the sentence."],
+    ["backtrack", true, "Self-correction (backtrack)",
+     "Removes what you took back: “meet at four — scratch that — at five” "
+     + "becomes “meet at five”."],
+    ["auto_lists", true, "Automatic lists",
+     "Spoken ordinals (“first… second… third…”) become a numbered "
+     + "list, with guards so “one of the two options” stays prose."],
+    ["smart_capitalization", true, "Smart capitalisation",
+     "When you dictate into the middle of an existing sentence, the first word is not "
+     + "capitalised. Needs context awareness on."],
+    ["strip_trailing_period_in_chat", true, "Drop the final period in chat apps",
+     "In Slack, Messages, WhatsApp and similar, a trailing full stop reads as curt. "
+     + "This removes it there and nowhere else."],
+    ["context_awareness", true, "Context awareness",
+     "Reads the focused app and the text around your cursor through the Accessibility "
+     + "API to pick a style, avoid wrong capitalisation and re-focus the right window "
+     + "before pasting. Never takes screenshots; nothing leaves this machine."],
+  ];
+  const tgWrap = h("div", {style: "margin-top:4px"});
+  for (const [key, dflt, label, hint] of toggles) {
+    tgWrap.appendChild(switchRow(label, hint, get(key, dflt), (v) => set(key, v)));
+  }
+  fmt.appendChild(tgWrap);
+  root.appendChild(h("h2", {text: "Formatting"}));
+  root.appendChild(fmt);
+
+  root.appendChild(h("p", {class: "note",
+    text: "Dictionary and snippet entries live on the Dictionary tab."}));
+
+  /* ── Capture ──────────────────────────────────────────────── */
+  const cap = card("Capture", "The microphone side.");
+  cap.appendChild(field("Pre-roll (ms)",
+    "How much audio from BEFORE the key went down is kept. This is the fix for "
+    + "“it missed my first word” — the first syllable is already in the air "
+    + "when you press. 0–3000 ms.",
+    numberInput(get("preroll_ms", 500), 0, 3000, 50, (v) => set("preroll_ms", v))));
+  cap.appendChild(field("Maximum session length (seconds)",
+    "A hard stop for a single dictation, so a stuck key cannot record forever. "
+    + "10–7200 seconds.",
+    numberInput(get("max_session_seconds", 1200), 10, 7200, 30,
+                (v) => set("max_session_seconds", v),
+                (v) => "= " + minsLabel(v))));
+  root.appendChild(h("h2", {text: "Capture"}));
+  root.appendChild(cap);
+
+  /* ── Output ───────────────────────────────────────────────── */
+  const out = card("Output", "How the finished text gets into your app.");
+  out.appendChild(field("Paste method",
+    "Clipboard is fast and exact; keystroke types the text character by character, "
+    + "which is slower but works in apps that block paste.",
+    selectInput([["clipboard", "Clipboard (fast, recommended)"],
+                 ["keystroke", "Keystroke (slower, more compatible)"]],
+                get("paste_method", "clipboard"), (v) => set("paste_method", v))));
+  const outToggles = h("div");
+  outToggles.appendChild(switchRow("Restore the clipboard afterwards",
+    "Puts back whatever you had copied before the dictation overwrote it.",
+    get("restore_clipboard", true), (v) => set("restore_clipboard", v)));
+  outToggles.appendChild(switchRow("Sounds",
+    "Short cues when recording starts, finishes and is cancelled.",
+    get("sounds", true), (v) => set("sounds", v)));
+  out.appendChild(outToggles);
+  root.appendChild(h("h2", {text: "Output"}));
+  root.appendChild(out);
+
+  /* ── Appearance ───────────────────────────────────────────── */
+  const app = card("Appearance", "The floating dictation bar.");
+  app.appendChild(field("Bar position",
+    "Which edge of the screen the recording bar docks to.",
+    selectInput([["bottom", "Bottom"], ["left", "Left"], ["right", "Right"]],
+                get("bar_dock", "bottom"), (v) => set("bar_dock", v))));
+  const appToggles = h("div");
+  appToggles.appendChild(switchRow("Waveform",
+    "Live level meter while recording — the quickest way to see the mic is "
+    + "actually picking you up.",
+    get("show_waveform", true), (v) => set("show_waveform", v)));
+  appToggles.appendChild(switchRow("Word count",
+    "Running count of words transcribed so far in the current dictation.",
+    get("show_word_count", true), (v) => set("show_word_count", v)));
+  app.appendChild(appToggles);
+  root.appendChild(h("h2", {text: "Appearance"}));
+  root.appendChild(app);
+
+  /* ── Command mode ─────────────────────────────────────────── */
+  const cmd = card("Command mode",
+    "Select text, hold the command key and say what to do with it — the model "
+    + "rewrites the selection in place.");
+  cmd.appendChild(field("Backend",
+    "Ollama runs locally and never sends your text anywhere. Groq is a cloud API "
+    + "(needs a key in config.json). None disables command mode entirely.",
+    selectInput([["ollama", "Ollama (local)"], ["groq", "Groq (cloud)"],
+                 ["none", "Disabled"]],
+                get("command_backend", "ollama"), (v) => set("command_backend", v))));
+  cmd.appendChild(field("Ollama host",
+    "Base URL of your Ollama server. Must start with http:// or https://.",
+    textInput(get("ollama_host", "http://localhost:11434"), "http://localhost:11434",
+              (v) => set("ollama_host", v))));
+  cmd.appendChild(field("Ollama model",
+    "Model tag to use for rewriting. Small instruct models are plenty here; large "
+    + "ones make the round trip noticeably slower.",
+    textInput(get("ollama_model", "llama3.2:3b"), "llama3.2:3b",
+              (v) => set("ollama_model", v))));
+  root.appendChild(h("h2", {text: "Command mode"}));
+  root.appendChild(cmd);
+
+  /* ── Hotkeys ──────────────────────────────────────────────── */
+  const hot = card("Hotkeys",
+    "Hold a key to dictate; release to transcribe. Each slot needs its own key — "
+    + "two slots on one key would make one of them unreachable, and the whole "
+    + "hotkey block is rejected if they collide.");
+  const bindings = Object.assign({turbo: "alt_r", small: "cmd_r", command: "ctrl_r"},
+                                 get("bindings", {}) || {});
+  const clash = h("p", {class: "note", style: "color:#ff8b82; margin:2px 0 0"});
+  function checkClash() {
+    const vals = [bindings.turbo, bindings.small, bindings.command];
+    const dupe = new Set(vals).size !== vals.length;
+    clash.textContent = dupe
+      ? "Two slots share a key. Fix this before saving or the server will reject "
+        + "the whole hotkey group."
+      : "";
+  }
+  const slots = [
+    ["turbo", "Accurate model", "The large turbo model — best quality, still sub-second."],
+    ["small", "Fast model", "The small model — quicker, a little rougher."],
+    ["command", "Command mode", "Rewrites the current selection by voice."],
+  ];
+  for (const [slot, label, hint] of slots) {
+    hot.appendChild(field(label, hint, (() => {
+      const sel = h("select");
+      for (const name of KEY_NAMES) {
+        sel.appendChild(h("option", {value: name,
+          text: KEY_LABELS[name] ? KEY_LABELS[name] + "  (" + name + ")" : name}));
+      }
+      sel.value = bindings[slot];
+      if (sel.selectedIndex === -1) {
+        sel.appendChild(h("option", {value: bindings[slot], text: String(bindings[slot])}));
+        sel.value = bindings[slot];
+      }
+      sel.addEventListener("change", () => {
+        bindings[slot] = sel.value;
+        set("bindings", Object.assign({}, bindings));
+        checkClash();
+      });
+      return sel;
+    })()));
+  }
+  hot.appendChild(clash);
+  root.appendChild(h("h2", {text: "Hotkeys"}));
+  root.appendChild(hot);
+
+  /* ── Maintenance ──────────────────────────────────────────── */
+  const maint = card("Maintenance", null);
+  maint.appendChild(switchRow("Onboarding completed",
+    "Turn this off to see the first-run walkthrough again next time the agent starts.",
+    get("onboarded", false), (v) => set("onboarded", v)));
+  const compactMsg = h("span", {class: "status-msg"});
+  const compactBtn = h("button", {class: "btn ghost", text: "Compact history",
+    onclick: async () => {
+      compactBtn.disabled = true;
+      compactMsg.className = "status-msg busy";
+      compactMsg.textContent = "Compacting…";
+      try {
+        const r = await apiPost("/api/compact", {});
+        compactMsg.className = "status-msg ok";
+        compactMsg.textContent = "Done — " + nfmt(r.entries) + " "
+          + plural(r.entries, "entry", "entries") + " kept.";
+        await load(false);
+      } catch (err) {
+        compactMsg.className = "status-msg err";
+        compactMsg.textContent = err.message;
+      }
+      compactBtn.disabled = false;
+    }});
+  maint.appendChild(h("div", {class: "field", style: "margin-top:16px"}, [
+    h("span", {class: "lab", text: "Compact history"}),
+    h("span", {class: "hint", text: "Edits, pins and deletes are appended to the "
+      + "history file rather than rewritten in place. Compacting folds them down "
+      + "into one record per dictation. Nothing is lost."}),
+    h("div", {class: "toolbar"}, [compactBtn, compactMsg]),
+  ]));
+  root.appendChild(h("h2", {text: "Maintenance"}));
+  root.appendChild(maint);
+
+  /* ── save bar ─────────────────────────────────────────────── */
+  const saveBtn = h("button", {class: "btn", text: "Save settings", onclick: async () => {
+    if (!Object.keys(pendingSettings).length) {
+      msg.className = "status-msg";
+      msg.textContent = "Nothing changed.";
+      return;
+    }
+    await saveSettings(Object.assign({}, pendingSettings), msg, saveBtn);
+    pendingSettings = {};
+  }});
+  root.appendChild(h("div", {class: "savebar"}, [
+    saveBtn, msg,
+    h("span", {class: "note", style: "margin:0",
+      text: "Changes apply to your next dictation — no restart needed."}),
+  ]));
+}
+
+/* Shared save path for the settings and dictionary tabs. Anything the server
+   refuses comes back in `rejected`, and it is shown: a form that appears to
+   save but quietly drops a key is worse than one that says no. */
+async function saveSettings(payload, msg, btn) {
+  btn.disabled = true;
+  msg.className = "status-msg busy";
+  msg.textContent = "Saving…";
+  try {
+    const r = await apiPost("/api/settings", payload);
+    if (DATA && r.settings) DATA.settings = r.settings;
+    if (r.rejected && r.rejected.length) {
+      msg.className = "status-msg err";
+      msg.textContent = "Rejected by the server, not saved: " + r.rejected.join(", ")
+        + ". The value was out of range or the wrong type — everything else saved.";
+    } else {
+      msg.className = "status-msg ok";
+      msg.textContent = "Saved ✓";
+      setTimeout(() => {
+        if (msg.textContent === "Saved ✓") { msg.textContent = ""; }
+      }, 4000);
+    }
+  } catch (err) {
+    msg.className = "status-msg err";
+    msg.textContent = "Not saved: " + err.message;
+  }
+  btn.disabled = false;
+}
+
+/* ── small builders ─────────────────────────────────────────── */
+function card(title, lede) {
+  const c = h("div", {class: "card"});
+  if (title) c.appendChild(h("h3", {text: title}));
+  if (lede) c.appendChild(h("p", {class: "lede", text: lede}));
+  return c;
+}
+function field(label, hint, control, wide) {
+  return h("div", {class: "field"}, [
+    h("span", {class: "lab", text: label}),
+    hint ? h("span", {class: "hint", text: hint}) : null,
+    h("div", {class: wide ? "" : "ctl"}, control),
+  ]);
+}
+function switchRow(label, hint, checked, onchange) {
+  const input = h("input", {type: "checkbox", checked: !!checked});
+  input.addEventListener("change", () => onchange(input.checked));
+  return h("label", {class: "switch"}, [
+    input,
+    h("span", {class: "knob"}),
+    h("span", {class: "txt"}, [
+      h("b", {text: label}),
+      hint ? h("span", {text: hint}) : null,
+    ]),
+  ]);
+}
+function selectInput(options, value, onchange) {
+  const sel = h("select");
+  for (const [v, label] of options) sel.appendChild(h("option", {value: v, text: label}));
+  sel.value = value;
+  sel.addEventListener("change", () => onchange(sel.value));
+  return sel;
+}
+function textInput(value, placeholder, onchange) {
+  const inp = h("input", {type: "text", value: value || "", placeholder: placeholder || ""});
+  inp.addEventListener("input", () => onchange(inp.value));
+  return inp;
+}
+function numberInput(value, min, max, step, onchange, sideFn) {
+  const inp = h("input", {type: "number", value: value, min: min, max: max, step: step});
+  const side = h("span", {class: "hint", style: "margin:0"});
+  const warn = h("span", {class: "hint", style: "margin:0;color:#ff8b82"});
+  function refresh() {
+    const n = parseInt(inp.value, 10);
+    if (isNaN(n) || n < min || n > max) {
+      warn.textContent = "Must be a whole number between " + min + " and " + max + ".";
+      side.textContent = "";
+      return;
+    }
+    warn.textContent = "";
+    side.textContent = sideFn ? sideFn(n) : "";
+    onchange(n);
+  }
+  inp.addEventListener("input", refresh);
+  side.textContent = sideFn ? sideFn(value) : "";
+  return h("div", {class: "toolbar"}, [
+    h("div", {style: "flex:0 0 140px"}, inp), side, warn,
+  ]);
+}
+
+/* ════════════════════════════════════════════════════════════
+   Boot
+   ════════════════════════════════════════════════════════════ */
+showTab(readHash());
+load(false);
+setInterval(() => { load(false); }, 15000);
 </script>
 </body>
 </html>
