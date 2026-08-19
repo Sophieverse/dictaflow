@@ -35,7 +35,7 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from df import config, store          # noqa: E402
+from df import config, health, store  # noqa: E402
 
 PORT      = 7755
 HTML_FILE = Path(__file__).resolve().parent / "dashboard.html"
@@ -166,6 +166,19 @@ def compute(entries: list[dict]) -> dict:
         "by_app":      by_app.most_common(8),
         "last":        ok[0]["ts"] if ok else None,
         "daily":       daily,
+    }
+
+
+def _health_payload() -> dict:
+    healthy, verdict, state = health.summarise()
+    return {
+        "healthy":   healthy,
+        "verdict":   verdict,
+        "mic_open":  bool(state.get("mic_open")),
+        "mic_level": state.get("mic_level"),
+        "mic_muted": bool(state.get("mic_muted")),
+        "recording": bool(state.get("recording")),
+        "error":     state.get("last_error") or "",
     }
 
 
@@ -330,6 +343,12 @@ class Handler(BaseHTTPRequestHandler):
             "total":    len(entries),
             "stats":    compute(entries),
             "running":  agent_running(),
+            # Whether the process exists is NOT whether it works. The agent
+            # ran for three days with a dead microphone while this page
+            # cheerfully showed a green dot, because launchctl was the only
+            # thing being asked. The heartbeat is the agent's own account of
+            # itself, and it is what the page should believe.
+            "health":   _health_payload(),
             "settings": {k: cfg.get(k) for k in sorted(config.EDITABLE)},
             "config_error": cfg.get("_error"),
         })

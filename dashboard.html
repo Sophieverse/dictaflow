@@ -54,6 +54,9 @@ header{
 .dot{width:8px; height:8px; border-radius:50%; background:var(--bad); flex:none;
      transition:background .25s ease, box-shadow .25s ease;}
 .dot.on{background:var(--good); box-shadow:0 0 0 4px rgba(99,224,168,.15);}
+/* Up but not working. Distinct from stopped (plain red) on purpose:
+   the two need different fixes, and conflating them cost three days. */
+.dot.bad{background:var(--warn); box-shadow:0 0 0 4px rgba(255,207,122,.18);}
 nav{max-width:1240px; margin:0 auto; padding:10px 30px 0; display:flex; gap:2px;}
 nav a{
   color:var(--soft); font-size:14px; padding:10px 14px 12px;
@@ -516,11 +519,21 @@ function renderTab(name) {
 }
 
 function renderStatus() {
+  /* The dot tracks HEALTH, not liveness. A process that is up but cannot
+     open the microphone is not "running" in any sense you care about, and
+     showing it green is worse than showing nothing: it sends you looking
+     for the problem everywhere except where it is. */
+  const hz = DATA.health || {};
   const running = !!DATA.running;
-  $("#dot").classList.toggle("on", running);
+  const healthy = running && !!hz.healthy;
+  $("#dot").classList.toggle("on", healthy);
+  $("#dot").classList.toggle("bad", running && !healthy);
   const last = DATA.stats && DATA.stats.last ? parseTs(DATA.stats.last) : null;
-  let txt = running ? "agent running" : "agent stopped";
-  if (running && last) {
+  let txt;
+  if (!running) txt = "agent stopped";
+  else if (!healthy) txt = hz.verdict || "agent unhealthy";
+  else txt = "agent ready";
+  if (healthy && last) {
     txt += " · last " + last.toLocaleDateString(undefined, {month: "short", day: "numeric"})
          + " " + timeOf(DATA.stats.last);
   }
@@ -559,6 +572,19 @@ function renderStats() {
       "Nothing is listening for your hotkeys. Start the LaunchAgent:",
       h("pre", {class: "cmd",
         text: "launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.dictaflow.agent.plist"})));
+  } else if (DATA.health && !DATA.health.healthy) {
+    /* Running but not working — the case that went unnoticed for three days
+       because nothing on this page distinguished it from working. */
+    const hz = DATA.health;
+    root.appendChild(banner("bad", "⚠", "DictaFlow is running but cannot dictate",
+      hz.verdict,
+      h("div", {}, [
+        hz.error ? h("p", {text: hz.error}) : null,
+        h("p", {text: "It retries on its own — hold the key again in a few "
+          + "seconds. If it keeps failing, restart the agent:"}),
+        h("pre", {class: "cmd",
+          text: "launchctl kickstart -k gui/$(id -u)/com.dictaflow.agent"}),
+      ])));
   }
 
   /* ── stat cards ── */

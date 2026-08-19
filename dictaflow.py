@@ -26,7 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from df import asr, config, hud, hotkeys, store          # noqa: E402
+from df import asr, config, health, hud, hotkeys, store  # noqa: E402
 from df.audio import Recorder, list_input_devices         # noqa: E402
 from df.session import Session                            # noqa: E402
 
@@ -234,6 +234,54 @@ def setup(cfg: dict) -> int:
     return 0
 
 
+def fix_audio() -> int:
+    """Manually do what the agent now does by itself.
+
+    Kept as a command because it is the one repair worth being able to reach
+    for directly — and because `sudo killall coreaudiod`, the advice every
+    other source gives for this, is a far bigger hammer that needs a password
+    and interrupts audio for the whole machine.
+    """
+    from df import coreaudio
+    muted = coreaudio.input_is_muted()
+    if muted:
+        print("✗  the input device is muted — unmute it first; a reset will "
+              "not help.")
+        return 1
+    ok, detail = coreaudio.reset_input_device()
+    print(f"{'✓' if ok else '✗'}  {detail}")
+    if ok:
+        print("   Restarting the agent so it picks up the rebuilt device…")
+        os.system("launchctl kickstart -k gui/$(id -u)/com.dictaflow.agent")
+    return 0 if ok else 1
+
+
+def status() -> int:
+    """Answer "is it working right now?" without reading a log file.
+
+    Reads the agent's heartbeat rather than testing anything itself. A test
+    from here would open the microphone as *this* process, which is a
+    different identity with different permissions and its own device handle —
+    it can pass while the agent is failing, and vice versa. The only honest
+    source is what the agent last said about itself.
+    """
+    healthy, verdict, state = health.summarise()
+    print(f"{'✓' if healthy else '✗'}  {verdict}")
+    if not state:
+        print("   Start it with: launchctl kickstart -k "
+              "gui/$(id -u)/com.dictaflow.agent")
+        return 1
+    up = time.time() - float(state.get("started_at") or 0)
+    print(f"   pid {state.get('pid')}, up {up / 3600:.1f}h, "
+          f"device {state.get('mic_device')}")
+    print(f"   mic open: {state.get('mic_open')}   "
+          f"level: {state.get('mic_level')}   "
+          f"recording: {state.get('recording')}")
+    if state.get("last_error"):
+        print(f"   last error: {state['last_error']}")
+    return 0 if healthy else 1
+
+
 def doctor(cfg: dict) -> int:
     """A deeper report, for when dictation isn't working and it isn't obvious."""
     print(f"\n─── {BANNER} doctor ───────────────────────────────\n")
@@ -333,15 +381,22 @@ class App:
         self.router = None
         self._ready = threading.Event()
         self._stopping = threading.Event()
+        self._last_error = ""
+        self._started_at = time.time()
+        self._beat_at = 0.0
 
     # ── warmup ──────────────────────────────────────────────────
     def _open_mic(self) -> None:
         """Open the input stream — never fatally, never indefinitely."""
         ok, detail = self.recorder.open_with_timeout(8.0)
         if not ok:
+            self._last_error = detail
             log(f"⚠  microphone: {detail}")
-            log("   Dictation will not capture audio until this is resolved.")
-            log("   Run `dictaflow.py --doctor` for a live check.")
+            log("   Dictation is not dead: the next keypress after the "
+                "cooldown tries again by itself.")
+            log("   Run `dictaflow.py --status` to see the live verdict.")
+        else:
+            self._last_error = ""
 
     def _warmup(self) -> None:
         """Load both models and open the mic before the first dictation.
@@ -512,6 +567,7 @@ class App:
                     return 3
                 self.session.tick()
                 self.bar.pump()
+                self._beat()
         except KeyboardInterrupt:
             pass
         finally:
@@ -539,6 +595,35 @@ class App:
     def _quit(self) -> None:
         self._stopping.set()
 
+    def _beat(self) -> None:
+        """Publish what we know about ourselves, a few times a second at most."""
+        now = time.monotonic()
+        if now - self._beat_at < health.HEARTBEAT_S:
+            return
+        self._beat_at = now
+        rec = self.recorder
+        # Recover BEFORE reporting, so the heartbeat describes the state we
+        # are actually leaving her in rather than the one we just repaired.
+        note = rec.recover_if_broken()
+        if note:
+            log(f"⚠  {note}")
+            self._last_error = "" if "reopened" in note else note
+        health.write({
+            "started_at":   self._started_at,
+            "models_ready": self._ready.is_set(),
+            "mic_open":     rec._stream is not None,
+            "mic_flowing":  rec.is_flowing(),
+            "mic_blocks":   rec._total_blocks,
+            "mic_level":    round(rec.level, 5),
+            # is_silent() is a rolling run, looks_muted() a lifetime tally.
+            # Report the one that can go back to False.
+            "mic_silent":   rec.is_silent(),
+            "mic_muted":    rec.looks_muted(),
+            "mic_device":   rec.device,
+            "recording":    self.session.is_recording(),
+            "last_error":   self._last_error,
+        })
+
     def shutdown(self) -> None:
         if self._stopping.is_set() and self.router is None:
             return
@@ -552,6 +637,7 @@ class App:
             self.recorder.close()
         except Exception:
             pass
+        health.clear()
 
 
 DEFAULT_BINDINGS = {"turbo": "alt_r", "small": "cmd_r", "command": "ctrl_r"}
@@ -567,11 +653,19 @@ def main() -> int:
                         help="compact the history file and exit")
     parser.add_argument("--setup", action="store_true",
                         help="guided first-run setup with a mic and whisper test")
+    parser.add_argument("--status", action="store_true",
+                        help="is the running agent healthy right now?")
+    parser.add_argument("--fix-audio", action="store_true",
+                        help="reset the input device when the mic goes silent")
     args = parser.parse_args()
 
     cfg = config.load()
     cfg.setdefault("bindings", DEFAULT_BINDINGS)
 
+    if args.status:
+        return status()
+    if args.fix_audio:
+        return fix_audio()
     if args.compact:
         print(f"compacted to {store.compact()} entries")
         return 0

@@ -142,35 +142,72 @@ symlink, so check `readlink -f .venv/bin/python` and grant that path.
 
 ### When the microphone goes silent
 
-Two distinct failures look identical from the outside — every dictation comes
-back "no speech detected" — and neither raises an error:
+Three distinct failures look identical from the outside — every dictation
+comes back "no speech detected" — and none of them raises an error. DictaFlow
+now detects and repairs all three by itself; this section is what it is doing
+and why.
 
-1. **CoreAudio is wedged.** The device open blocks forever inside
-   `AudioUnitSetProperty` rather than failing. Usually caused by a client
-   killed with `SIGKILL` while it held the device. Fix:
+Check first:
 
-   ```bash
-   sudo killall coreaudiod      # it restarts automatically
-   launchctl kickstart -k gui/$(id -u)/com.dictaflow.agent
+```bash
+dictaflow.py --status      # the agent's own account of itself
+```
+
+1. **The device open blocks.** CoreAudio does not fail the open, it stops
+   returning — the stack sits in `AudioUnitSetProperty` forever. DictaFlow
+   abandons the attempt after 8 seconds, keeps loading models and handling
+   keys, and **retries on the next keypress after a short cooldown**.
+
+   That retry is the whole point. An earlier version set a flag when the
+   open hung and never cleared it, so a machine that recovered in an hour
+   met an app that refused every dictation for three days.
+
+2. **The stream is open but stopped.** Callbacks simply cease; the handle
+   stays valid and `close()` still succeeds. Detected by watching whether
+   blocks arrive (`is_flowing()`), repaired by reopening.
+
+3. **Blocks arrive and every sample is exactly zero.** The nastiest one: the
+   device is alive, unmuted, at normal input volume, delivering blocks at
+   precisely the right rate, and carrying nothing. It affects *every* app on
+   the machine, `ffmpeg` included, so reopening the stream cannot help.
+
+   The usual advice is `sudo killall coreaudiod`. Measured here on macOS
+   26.5.1, a much smaller lever does the same job from user space: setting
+   the input device's nominal sample rate to a different value and back
+   forces the HAL to rebuild its IO context.
+
+   ```
+   before flip: ffmpeg peak = 0     (digital silence, ~30 minutes of it)
+   after  flip: ffmpeg peak = 1059  (room tone)
    ```
 
-   DictaFlow gives up on the open after 8 seconds and says so, rather than
-   hanging: models still load and keys still work, so you get a message
-   instead of an app that appears dead.
+   The agent does this automatically after ~3 seconds of unbroken zero
+   blocks, at most three times, and never while you are recording. To do it
+   by hand: `dictaflow.py --fix-audio`. If the device reports itself *muted*
+   it is left alone — a reset would not unmute it.
 
-2. **The launchd job has no Microphone grant.** A bare launchd job is its own
-   responsible process with no bundle identifier, so macOS has nothing to
-   attach a grant to and hands back digital zeros. Granting via Terminal does
-   not help — that grants *Terminal*. Fix: build the app bundle
-   (`app-src/build.sh`), point `com.dictaflow.agent.plist` at
-   `DictaFlow.app/Contents/MacOS/DictaFlow`, and grant Microphone **and**
-   Accessibility to "DictaFlow". Both, or the agent won't even see keypresses.
+Common to all three: a fault must be able to expire. Every check here is a
+rolling window or a deadline, never a flag that only goes one way, because
+the app cannot see the machine get better — it can only stop assuming it
+hasn't.
+
+**If it is genuinely a permissions problem.** A bare launchd job is its own
+responsible process with no bundle identifier, so macOS has nothing to attach
+a Microphone grant to and hands back digital zeros. Granting via Terminal does
+not help — that grants *Terminal*. Fix: build the app bundle
+(`app-src/build.sh`), point `com.dictaflow.agent.plist` at
+`DictaFlow.app/Contents/MacOS/DictaFlow`, and grant Microphone **and**
+Accessibility to "DictaFlow". Both, or the agent won't even see keypresses.
 
 Only one DictaFlow may run at a time; a second copy exits immediately rather
 than fighting for the microphone, which is its own way of producing an
 apparently-dead app.
 
-**Something not working?** `dictaflow.py --doctor` reports models,
+**Something not working?** `dictaflow.py --status` answers "is it working
+right now?" in one line from the agent's heartbeat — the dashboard's dot uses
+the same source, and turns amber for *running but not working*, which is a
+different problem from *stopped* and needs a different fix. For more depth,
+`dictaflow.py --doctor` reports models,
 permissions, devices, a live 2-second mic test with the measured speech
 metrics, command-mode readiness, and your most recent rejections with reasons.
 

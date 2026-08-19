@@ -176,6 +176,11 @@ class Session:
             streamer._stop.set()
         self.bar.hide()
 
+    def is_recording(self) -> bool:
+        """For the heartbeat. Reads shared state, so it takes the lock."""
+        with self._lock:
+            return self._state == RECORDING
+
     # ── periodic, called from the main loop ─────────────────────
     def tick(self) -> None:
         with self._lock:
